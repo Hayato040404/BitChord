@@ -2,6 +2,8 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import type { DetectedExtension, YtAuthState } from '@bitchord/shared/bridge';
 import { queryClient } from '@/lib/queryClient';
+import { sessionAuthState } from '@/portable/relay';
+import { useRelayAvailable } from './backend';
 import { extensionQueryKey, useExtension } from './useExtension';
 
 /**
@@ -72,7 +74,12 @@ function adopt(state: YtAuthState): void {
 
 async function readAuth(refresh: boolean): Promise<YtAuthState> {
   const extension = detected();
-  if (!extension || !supportsAuth(extension)) return SIGNED_OUT;
+  if (!extension || !supportsAuth(extension)) {
+    // Without an extension the imported session file is the account (portable/session.ts).
+    const state = await sessionAuthState();
+    adopt(state);
+    return state;
+  }
   const state = await extension.bridge.call('yt.authState', { refresh }, { timeoutMs: 20_000 });
   adopt(state);
   return state;
@@ -85,16 +92,25 @@ export async function ensureYtAuth(): Promise<YtAuthState> {
   return queryClient.fetchQuery({ queryKey: ytAuthQueryKey, queryFn: () => readAuth(false), staleTime: 30_000 });
 }
 
+/** Forgets the account read so the next one re-reads the session file (after an import or a removal). */
+export function forgetYtAuth(): void {
+  lastIdentity = null;
+  queryClient.removeQueries({ queryKey: ytAuthQueryKey });
+}
+
 export type YtAuthStatus = { state: 'checking' } | { state: 'unavailable' } | { state: 'ready'; auth: YtAuthState };
 
 export function useYtAuth(): YtAuthStatus {
   const extension = useExtension();
   const present = extension.state === 'present' ? extension.extension : null;
   const enabled = supportsAuth(present);
+  // The relay counts as an auth source too: a phone's imported session file.
+  const relay = useRelayAvailable();
+  const useRelay = !enabled && relay;
   const query = useQuery({
     queryKey: ytAuthQueryKey,
     queryFn: () => readAuth(false),
-    enabled,
+    enabled: enabled || useRelay,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
     retry: 1,
@@ -107,8 +123,8 @@ export function useYtAuth(): YtAuthStatus {
     });
   }, [present, enabled]);
 
-  if (extension.state === 'checking' || (enabled && query.isPending)) return { state: 'checking' };
-  if (!enabled) return { state: 'unavailable' };
+  if (extension.state === 'checking' || ((enabled || useRelay) && query.isPending)) return { state: 'checking' };
+  if (!enabled && !useRelay) return { state: 'unavailable' };
   return { state: 'ready', auth: query.data ?? SIGNED_OUT };
 }
 

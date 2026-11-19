@@ -62,6 +62,17 @@ export interface VideoStream {
  */
 const MIN_VIDEO_ASPECT = 1.2;
 
+/** What the player needs from a deck's engine; the extension's and the portable one both satisfy it. */
+export interface PlaybackEngine {
+  readonly audio: HTMLAudioElement;
+  onFatal: (videoId: string, message: string, permanent: boolean) => void;
+  onRecovered: (track: LoadedTrack) => void;
+  warm(): Promise<void>;
+  load(videoId: string, options?: { startSec?: number; autoplay?: boolean }): Promise<LoadedTrack>;
+  videoStream(height?: number | null): Promise<VideoStream | null>;
+  stop(): Promise<void>;
+}
+
 export class SupersededError extends Error {
   override readonly name = 'SupersededError';
 }
@@ -82,7 +93,7 @@ const FIRST_AUDIO_TIMEOUT_MS = 15_000;
  * was loading before. A client that fails to stream is excluded for the track
  * and the next one in the walk is tried, at the same position.
  */
-export class YouTubeEngine {
+export class YouTubeEngine implements PlaybackEngine {
   readonly audio: HTMLAudioElement;
   private player: shaka.Player | null = null;
   private adapter: SabrStreamingAdapter | null = null;

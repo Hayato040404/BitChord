@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getAudio, getMixBeat, getPlayhead, usePlayer } from '@/state/player';
+import { getAudio, getDuration, getMixBeat, getPlayhead, usePlayer } from '@/state/player';
 
 export function clock(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
@@ -87,11 +87,13 @@ export function useScrubber() {
     if (!audio || !element) return;
     let frame = 0;
     const draw = () => {
-      const duration = audio.duration;
+      const duration = getDuration();
       // during a loop mix the element is paused under the decks: the mix's own playhead
       const head = getPlayhead();
       const paused = head?.paused ?? audio.paused;
-      const time = dragging !== null && Number.isFinite(duration) ? dragging * duration : (head?.sec ?? audio.currentTime);
+      const rawTime = dragging !== null ? dragging * duration : (head?.sec ?? audio.currentTime);
+      // The element's clock can run into the doubled tail an iPhone reports; never show it.
+      const time = duration > 0 ? Math.min(rawTime, duration) : rawTime;
       const base = Math.min(1, Math.max(0, duration > 0 ? time / duration : 0));
       const beat = dragging === null ? getMixBeat() : null;
       const mix = stepPulse(pulse.current, performance.now(), beat, paused);
@@ -130,8 +132,8 @@ export function useScrubber() {
     },
     onPointerUp: (e: React.PointerEvent<HTMLElement>) => {
       if (dragging === null) return;
-      const audio = getAudio();
-      if (audio && Number.isFinite(audio.duration)) seek(fractionAt(e) * audio.duration);
+      const duration = getDuration();
+      if (getAudio() && duration > 0) seek(fractionAt(e) * duration);
       setDragging(null);
     },
     onPointerCancel: () => setDragging(null),

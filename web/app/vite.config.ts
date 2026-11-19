@@ -3,6 +3,8 @@ import { fileURLToPath, URL } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig, loadEnv } from 'vite';
+import { relayPlugin } from './vite.relay';
+import { pagesPlugin } from './vite.pages';
 
 // The development extension's id, pinned by its manifest `key`
 // (web/extension/dev-key/). Read at build time so the page can message it.
@@ -26,8 +28,12 @@ function requirePartyServer(mode: string): void {
 
 export default defineConfig(({ command, mode }) => {
   if (command === 'build') requirePartyServer(mode);
+  // GitHub Pages serves the app from /<repo>/, and its deep links need a 404.html
+  // to land on (vite.pages.ts). Every other target serves it from the root.
+  const base = process.env.BITCHORD_BASE || '/';
   return {
-    plugins: [react(), tailwindcss()],
+    base,
+    plugins: [react(), tailwindcss(), relayPlugin(), ...(base === '/' ? [] : [pagesPlugin(base)])],
     define: {
       DEV_EXTENSION_ID: JSON.stringify(devExtensionId()),
     },
@@ -43,6 +49,9 @@ export default defineConfig(({ command, mode }) => {
       // exactly, so the port must not drift to 5174 when 5173 is busy.
       port: 5173,
       strictPort: true,
+      // A phone testing the no-extension path reaches the dev server (and its
+      // relay) over the local network, so it must answer on every interface.
+      host: true,
     },
   };
 });

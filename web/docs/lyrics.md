@@ -31,19 +31,25 @@ The race, as on the phone:
 |---|---|---|
 | lrc.red (search and `/s/{isrc}.ttml`), lyrics-api.binimum.org (307 to lrc.red, both `*`), lyrics.paxsenix.org, lrclib.net | `*` | direct |
 | lyricsplus.prjktla.my.id, lyricsplus.binimum.org (the only LyricsPlus mirrors left; atomix.one, `.workers.dev` and both `.vercel.app` were dead on 2026-10-17 and dropped) | `*` | direct |
-| lyrics-api.boidu.dev, unison.boidu.dev | echoes `localhost` only | direct, falling back to the extension elsewhere |
-| KuGou, Musixmatch, Genius, music.apple.com and amp-api (PaxSenix's Apple search), api.paxsenix.org | none | extension |
+| lyrics-api.boidu.dev, unison.boidu.dev | echoes `localhost` only | direct, falling back to the extension, then the relay |
+| KuGou, Musixmatch, Genius, music.apple.com and amp-api (PaxSenix's Apple search), api.paxsenix.org | none | extension, then the relay |
 | translate.googleapis.com (am-lyrics' translation) | `*` | direct |
 
-How the extension route works:
+How the extension/relay route works (the extension on desktop, `/api/lyrics` on
+a phone):
+
 - `lyrics.fetch` (`extension/lib/lyricsFetch.ts`) serves only the hosts in `lib/lyricHosts.ts`.
 - Each host is an `optional_host_permissions` entry.
 - Chrome only prompts in answer to a click inside the extension. So `lyrics.requestPermissions` opens `grant.html`, which asks.
 - Until a host is granted, requests to it fail with `permission`. Lyric Settings offers "Allow"; the panel offers it too, but only when nothing was found.
 - The grant happens in the extension's tab, so when BitChord's tab comes back (focus or visibility) the app asks `lyrics.permissions` about the refused hosts. Any that are allowed now leave the notice, the lyric cache is dropped, and the lookup runs again.
-- Session rules give the extension's own requests:
-  - Apple's Origin, for `amp-api`.
-  - Musixmatch's `mxm_bab=AB` cookie.
+- When no extension answers, `lyricsGet` asks the relay instead: `GET /api/lyrics?url=…` (`shared/src/relay.ts`). The relay has a closed allowlist, adds a browser User-Agent, and sets the host-specific headers:
+  - Apple's Origin/Referer, for `amp-api`.
+  - Musixmatch's `mxm_bab=AB` cookie and Referer.
+  - Genius' Referer.
+  - It forwards the caller's `Authorization` for PaxSenix and Apple's search.
+- The relay is not a general proxy: `LYRIC_HOSTS` is an exact host list, and only GET/HEAD are allowed.
+- Genius may still answer a Cloudflare captcha to a data-centre IP; that is the provider's bot check, not a missing header. A home-hosted relay avoids it.
 
 ## Rendering
 
@@ -76,7 +82,13 @@ Playwright Chromium and stock Firefox, with the extension:
 - Picking LRCLIB swaps the lyrics.
 - Translate on Despacito: 75 translated lines.
 
+Playwright Chromium **without** the extension, through `/api/lyrics`:
+- KuGou search and download returned a lyric; Apple's web token and `amp-api` catalogue search returned songs; Musixmatch's page loaded.
+- The panel rendered BetterLyrics for the home feed's first track with the right duration. The extension-only hosts no longer disappear on a phone when a relay is present.
+- `shared/src/relay.test.ts` covers the allowlist, the browser headers, the forwarded token, GET-only, and the CORS response.
+
 ## Not done or not verified
 
-- The extension-only providers (KuGou, Musixmatch, Genius, PaxSenix's Apple search) end to end: granting needs a real click on the browser's permission prompt, which the headless harness can't give. Only the refusal path (`permission`, then the Allow offer) was seen.
+- The extension-only providers (KuGou, Musixmatch, Genius, PaxSenix's Apple search) end to end through the **extension**: granting needs a real click on the browser's permission prompt, which the headless harness can't give. Only the refusal path (`permission`, then the Allow offer) was seen. The relay path is verified above.
+- Genius through the relay from a data-centre IP: Cloudflare returned a captcha from this test network.
 - Choosing a translation language other than English.

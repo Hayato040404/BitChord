@@ -4,8 +4,8 @@ let appleToken: Promise<string | null> | null = null;
 
 /**
  * Apple's web player token, scraped from its own script (through the
- * extension: no CORS there). Shared by the Apple lyrics lookup and the artist
- * page's Apple art.
+ * extension, or the relay on a phone: no CORS there). Shared by the Apple
+ * lyrics lookup and the artist page's Apple art.
  */
 export function appleWebToken(): Promise<string | null> {
   appleToken ??= (async () => {

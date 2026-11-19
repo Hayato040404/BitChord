@@ -3,7 +3,7 @@ import type { DiscordNowPlaying } from '@bitchord/shared/bridge';
 import { getBridge } from '@/extension/bridge';
 import { useDiscord, useDiscordOptions } from '@/extension/useDiscord';
 import { sizedArtwork } from '@/lib/artwork';
-import { getAudio, usePlayer } from '@/state/player';
+import { getAudio, getDuration, usePlayer } from '@/state/player';
 
 /**
  * Tells the extension what's playing, for the Discord card (prompt §7.2).
@@ -23,14 +23,15 @@ function nowPlaying(): DiscordNowPlaying | null {
   const { nowPlaying: np, queue, index } = usePlayer.getState();
   const audio = getAudio();
   if (!np) return null;
-  const durationSec = audio && Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : np.durationSec;
+  // The same figure the seek bar shows: metadata, unless the element agrees with it.
+  const durationSec = getDuration() || np.durationSec;
   return {
     videoId: np.videoId,
     title: np.title,
     artist: np.artist,
     album: queue[index]?.track.album?.name ?? null,
     artworkUrl: np.artworkUrl ? sizedArtwork(np.artworkUrl, ART_PX) : null,
-    positionMs: Math.round((audio?.currentTime ?? 0) * 1000),
+    positionMs: Math.round(Math.min(audio?.currentTime ?? 0, durationSec) * 1000),
     durationMs: Math.round(durationSec * 1000),
     playbackRate: audio?.playbackRate || 1,
   };

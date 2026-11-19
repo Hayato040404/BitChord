@@ -10,3 +10,6 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+// For browser-driven tests, next to __bcPlayer and __bcUi.
+if (import.meta.env.DEV) Object.assign(window, { __bcQueryClient: queryClient });

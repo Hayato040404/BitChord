@@ -98,9 +98,10 @@ export default function ArtistPage() {
           className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_45%,color-mix(in_srgb,var(--page-tint,var(--pageBG))_70%,transparent)_80%,var(--page-tint,var(--pageBG))_100%)]"
           aria-hidden="true"
         />
-        <div className="absolute inset-x-0 bottom-6 flex flex-col items-center gap-1.5 px-(--body-gutter) text-center">
+        {/* The name sits on the photo, not on the page: Apple keeps it white whatever the page's appearance. */}
+        <div className="absolute inset-x-0 bottom-6 flex flex-col items-center gap-1.5 px-(--body-gutter) text-center text-white">
           <ArtistName name={data.name} apple={apple} />
-          {data.audience && <p className="type-callout-emphasized text-secondary">{data.audience}</p>}
+          {data.audience && <p className="type-callout-emphasized text-[#ffffffb3]">{data.audience}</p>}
           <button
             // The 56px key-colour play button.
             className="mt-2.5 grid size-14 place-items-center rounded-full bg-(--play-fill,var(--keyColorBG)) text-(--play-glyph,#fff) shadow-[0_2px_6px_-4px_#0006,inset_0_0_2px_#ffffff1a] disabled:opacity-40 enabled:hover:scale-[1.04]"

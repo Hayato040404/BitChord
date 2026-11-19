@@ -1,6 +1,7 @@
 import { Check } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { usePhoneLayout } from '@/lib/viewport';
 
 export type MenuPlacement = 'above-start' | 'above-end' | 'below-end';
 
@@ -19,8 +20,73 @@ interface MenuProps {
  * Apple's contextual menu (report §8): a glass panel, 185px minimum, 13px
  * items, hairline separators, red for destructive items. Closes on Escape, a
  * click outside, or a scroll of the page under it.
+ *
+ * On a phone it is the action sheet instead, as Apple's is: the same items
+ * full-width, rising from the bottom over a scrim, with a Cancel row. A popover
+ * pinned to a 30px ⋯ button is a desktop gesture; a thumb can't hit it and the
+ * `pointerdown` scrim under it would fire before a tap landed.
  */
 export function Menu({ anchor, placement = 'below-end', onClose, label, matchWidth, children }: MenuProps) {
+  const phone = usePhoneLayout();
+  if (phone) return <ActionSheet onClose={onClose} label={label}>{children}</ActionSheet>;
+  return <PopoverMenu anchor={anchor} placement={placement} onClose={onClose} label={label} matchWidth={matchWidth}>{children}</PopoverMenu>;
+}
+
+const scrollLock = 'overflow-hidden';
+
+/** The phone's menu: a sheet from the bottom, `role="menu"`, with Cancel. */
+function ActionSheet({ onClose, label, children }: { onClose: () => void; label: string; children: ReactNode }) {
+  const panel = useRef<HTMLDivElement>(null);
+
+  // The page under the sheet holds still, as iOS's does.
+  useEffect(() => {
+    const previous = document.body.className;
+    document.body.classList.add(scrollLock);
+    return () => {
+      document.body.className = previous;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
+  return createPortal(
+    <>
+      <div
+        className="fixed inset-0 z-[calc(var(--z-contextual-menus)-1)] animate-fade bg-[#00000059]"
+        onPointerDown={onClose}
+        aria-hidden="true"
+      />
+      <div
+        ref={panel}
+        className="fixed inset-x-0 bottom-0 z-(--z-contextual-menus) max-h-[80dvh] animate-sheet-in overflow-y-auto rounded-t-[16px] bg-page pb-[calc(env(safe-area-inset-bottom)+8px)] shadow-[0_-1px_0_var(--vibrantDivider),0_-20px_60px_#00000040] motion-reduce:animate-none"
+        role="menu"
+        aria-label={label}
+      >
+        <div className="mx-auto mt-2 mb-1 h-1 w-9 rounded-full bg-tertiary" aria-hidden="true" />
+        <div className="px-4 pt-1 pb-2 type-title-3-emphasized">{label}</div>
+        <div className="px-2">{children}</div>
+        <div className="mx-2 mt-2 border-t-[0.5px] border-t-vibrant-divider" role="separator" />
+        <button
+          className="mt-1 w-full rounded-[10px] px-4 py-3 text-start type-title-3 text-key active:bg-quinary"
+          onClick={onClose}
+        >
+          Cancel
+        </button>
+      </div>
+    </>,
+    document.body,
+  );
+}
+
+function PopoverMenu({ anchor, placement, onClose, label, matchWidth, children }: MenuProps) {
   const panel = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<React.CSSProperties>({ visibility: 'hidden' });
 
@@ -104,7 +170,7 @@ interface MenuItemProps {
 export function MenuItem({ onSelect, icon, checked, destructive, disabled, trailing, children }: MenuItemProps) {
   return (
     <button
-      className="flex min-h-7 w-full items-center gap-2 rounded-[5px] px-2 py-1 text-start type-body text-primary enabled:hover:bg-quinary focus-visible:bg-quinary disabled:text-tertiary data-destructive:text-destructive"
+      className="flex min-h-7 w-full items-center gap-2 rounded-[5px] px-2 py-1 text-start type-body text-primary enabled:hover:bg-quinary focus-visible:bg-quinary disabled:text-tertiary data-destructive:text-destructive max-md:min-h-11 max-md:px-2.5 max-md:type-title-3 max-md:active:bg-quinary"
       role={checked === undefined ? 'menuitem' : 'menuitemradio'}
       aria-checked={checked === undefined ? undefined : !!checked}
       data-destructive={destructive || undefined}

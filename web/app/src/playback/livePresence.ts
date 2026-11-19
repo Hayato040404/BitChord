@@ -1,4 +1,5 @@
 import { config } from '@/config';
+import { uuid } from '@/lib/uuid';
 
 /**
  * Tells the BitChord server this tab is open, so it can count the web player
@@ -22,12 +23,12 @@ function installId(): string {
   try {
     const held = localStorage.getItem(ID_KEY);
     if (held) return held;
-    const fresh = crypto.randomUUID();
+    const fresh = uuid();
     localStorage.setItem(ID_KEY, fresh);
     return fresh;
   } catch {
     // Storage blocked: an id per page load still counts this tab once.
-    return crypto.randomUUID();
+    return uuid();
   }
 }
 

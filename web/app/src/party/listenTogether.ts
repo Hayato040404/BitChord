@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { uuid } from '@/lib/uuid';
 import { config } from '@/config';
 import { ytAuthSnapshot } from '@/extension/useYtAuth';
 import { ServerClock } from './clock';
@@ -138,7 +139,7 @@ export const clock = new ServerClock();
 function deviceId(): string {
   let id = localStorage.getItem('bitchord:deviceId');
   if (!id) {
-    id = crypto.randomUUID();
+    id = uuid();
     localStorage.setItem('bitchord:deviceId', id);
   }
   return id;

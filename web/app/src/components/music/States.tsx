@@ -8,13 +8,14 @@ export const stateStyles = {
   button: 'mt-3 inline-flex h-8 items-center rounded-pill bg-key-bg px-4 type-body-emphasized text-white',
 };
 
-/** In place of a YouTube page when the extension isn't installed (prompt §1): an invitation, not an error. */
+/** In place of a YouTube page when neither the extension nor the relay can reach YouTube: an explanation, not an error. */
 export function NeedsExtension({ what = 'YouTube Music' }: { what?: string }) {
   return (
     <div className={stateStyles.state}>
-      <p className={stateStyles.title}>Browse {what} with the BitChord extension</p>
+      <p className={stateStyles.title}>Browse {what} with BitChord</p>
       <p className={stateStyles.detail}>
-        The extension lets this page reach YouTube Music from your own browser. Addons and lyrics work without it.
+        On a computer, the BitChord extension lets this page reach YouTube Music from your own browser. On a phone, this site’s relay
+        does it instead — if this deployment has one. Addons and lyrics work either way.
       </p>
       <PrefetchLink to="/extension" className={stateStyles.button}>
         Get the Extension
@@ -35,11 +36,12 @@ export function LoadError({ error, onRetry }: { error: unknown; onRetry: () => v
   );
 }
 
-export function EmptyState({ title, detail }: { title: string; detail?: string }) {
+export function EmptyState({ title, detail, action }: { title: string; detail?: string; action?: React.ReactNode }) {
   return (
     <div className={stateStyles.state}>
       <p className={stateStyles.title}>{title}</p>
       {detail && <p className={stateStyles.detail}>{detail}</p>}
+      {action}
     </div>
   );
 }

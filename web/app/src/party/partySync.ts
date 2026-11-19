@@ -1,6 +1,6 @@
 import type { Track } from '@/data/music/types';
 import type { QueueTier } from '@/playback/queue/timeline';
-import { getAudio, partyPlayer, setPartyHooks, usePlayer } from '@/state/player';
+import { getAudio, getDuration, partyPlayer, setPartyHooks, usePlayer } from '@/state/player';
 import { controlsLocked, msUntilStart, party, partyPositionMs, useParty, type PartyState } from './listenTogether';
 import type { PartyTrack } from './models';
 import { autoplaySupplierId, detectSingleMove, partyQueueIndexOf, partyUpcomingAfter } from './queueReading';
@@ -128,8 +128,7 @@ function publish(): void {
   const { queue, index } = usePlayer.getState();
   const entry = current();
   if (!entry) return;
-  const audio = getAudio();
-  const track = toPartyTrack(entry.track, entry.tier, audio && Number.isFinite(audio.duration) ? audio.duration * 1000 : 0);
+  const track = toPartyTrack(entry.track, entry.tier, getDuration() * 1000);
   const position = positionMs();
   // During a deferred resume the player isn't going yet; what the user asked for is.
   const wantsPlaying = state.awaitingStart || playWhenReady();

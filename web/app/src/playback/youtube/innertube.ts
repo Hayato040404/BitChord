@@ -1,6 +1,8 @@
 import type { Innertube, Types } from 'youtubei.js/web';
+import { backendSnapshot } from '@/extension/backend';
 import { getBridge } from '@/extension/bridge';
 import { ensureYtAuth, identityOf, noteMusicIdentity } from '@/extension/useYtAuth';
+import { relayPageFetch, relayYtFetch, storedSession } from '@/portable/relay';
 import { trackLog } from '../trackLog';
 
 /**
@@ -65,6 +67,10 @@ const SAFELISTED = new Set(['accept', 'accept-language', 'content-language']);
  * type, and everything the dropped headers carried (client name and version,
  * visitor data) is also in the body's `context.client`. Origin, Referer and
  * X-Origin are added by the extension's rule.
+ *
+ * Without the extension there is no rule to add them, and YouTube refuses a
+ * foreign Origin outright, so the page hands the same request to the relay
+ * (portable/relay.ts), which makes it from YouTube's place and answers as-is.
  */
 async function simpleRequestFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const request = input instanceof Request ? input : null;
@@ -73,6 +79,10 @@ async function simpleRequestFetch(input: RequestInfo | URL, init?: RequestInit):
   if (!YOUTUBE_HOSTS.has(url.hostname) || url.pathname.startsWith('/api/jnn/')) {
     return fetch(input, init);
   }
+
+  // The session bootstrap (sw.js_data, iframe_api) and the player script are
+  // plain reads of youtube.com, and they need the same treatment as InnerTube.
+  if (backendSnapshot() === 'relay') return relayPageFetch(input, init);
 
   const method = init?.method ?? request?.method ?? 'GET';
   const source = new Headers(init?.headers ?? request?.headers);
@@ -110,6 +120,11 @@ async function signedFetch(input: RequestInfo | URL, init?: RequestInit): Promis
   const request = input instanceof Request ? input : null;
   const url = new URL(request ? request.url : input.toString());
   if (!isInnertubeCall(url)) return simpleRequestFetch(input, init);
+
+  // A phone's session file: the page signs the request and the relay makes it.
+  if (backendSnapshot() === 'relay') {
+    return relayYtFetch(input, init, await storedSession());
+  }
 
   const bridge = getBridge();
   if (!bridge) throw new Error('Signed-in requests need the BitChord extension');

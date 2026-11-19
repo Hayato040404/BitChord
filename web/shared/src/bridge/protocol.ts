@@ -79,6 +79,48 @@ export interface YtAuthState {
   problem: string | null;
 }
 
+/**
+ * A portable sign-in (session file). The desktop extension writes one, and a
+ * phone or tablet that can't install an extension imports it: the cookies
+ * let the same-origin relay act as the user, and the page computes the
+ * SAPISIDHASH from `sapisid` itself. It is a credential: never log it, and
+ * remove it when it isn't needed.
+ */
+export interface PortableCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  secure: boolean;
+  /** Epoch milliseconds, when Google set one. */
+  expirationDate?: number;
+}
+
+/** The account the export was taken as, for the settings screen. */
+export interface PortableAccount {
+  name: string;
+  handle: string | null;
+  avatarUrl: string | null;
+  /** `X-Goog-AuthUser`: which Google login in the browser's jar. */
+  authUser: string;
+  /** The channel id, when YouTube reported one. */
+  channelId: string | null;
+}
+
+export interface PortableSession {
+  format: 'bitchord-session';
+  version: 1;
+  exportedAt: number;
+  youtube: {
+    /** The auth cookies, filtered to the ones YouTube requests need. */
+    cookies: PortableCookie[];
+    /** SAPISID (or its __Secure- form) the SAPISIDHASH is computed over. */
+    sapisid: string | null;
+    authUser: string;
+    account: PortableAccount | null;
+  };
+}
+
 /** The browser's open.spotify.com session, as BitChord may use it (prompt §7.1). Names only, never tokens. */
 export interface SpotifyAuthState {
   /** The browser holds a Spotify session (an `sp_dc` cookie). */
@@ -191,6 +233,8 @@ export interface BridgeMethods {
   'yt.authState': { params: { refresh?: boolean }; result: YtAuthState };
   'yt.selectChannel': { params: { channelId: string }; result: YtAuthState };
   'yt.setConnected': { params: { connected: boolean }; result: YtAuthState };
+  /** The session file a phone imports to use this account without an extension (the user's own credential). */
+  'yt.exportSession': { params: Record<string, never>; result: PortableSession };
   'addon.fetch': { params: HttpRequest; result: HttpResponse };
   /** A lyric provider the page can't reach itself; refused with `permission` until its host is granted. */
   'lyrics.fetch': { params: HttpRequest; result: HttpResponse };

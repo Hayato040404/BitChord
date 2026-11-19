@@ -1,4 +1,5 @@
 import {
+  joinWords,
   line,
   lineAlignments,
   MIN_GAP_MS,
@@ -101,28 +102,39 @@ function mergeIntoWords(pieces: Piece[]): LyricWord[] {
   let start = 0;
   let end = 0;
   let timed = false;
+  let pendingSpace = false;
+  let spaceBefore = false;
   const flush = () => {
     const text = current.trim();
     current = '';
-    if (text && timed) words.push({ startMs: start, endMs: end, text, syllables: normalizedSyllables(syllables, text.length) });
+    if (text && timed) words.push({ startMs: start, endMs: end, text, spaceBefore, syllables: normalizedSyllables(syllables, text.length) });
     syllables = [];
     timed = false;
   };
   for (const piece of pieces) {
     if (piece.kind === 'text') {
-      if (!piece.text.trim()) flush();
-      else if (timed) current += piece.text;
+      if (!piece.text.trim()) {
+        flush();
+        pendingSpace = true;
+      } else if (timed) current += piece.text;
       continue;
     }
     if (!piece.text.trim()) continue;
-    if (/^\s/.test(piece.text)) flush();
+    if (/^\s/.test(piece.text)) {
+      flush();
+      spaceBefore = true;
+    } else if (!current) spaceBefore = pendingSpace;
+    pendingSpace = false;
     if (!current) start = piece.start;
     const from = current.length;
     current += piece.text.trim();
     syllables.push({ startMs: piece.start, endMs: piece.end, startChar: from, endChar: current.length });
     end = piece.end;
     timed = true;
-    if (/\s$/.test(piece.text)) flush();
+    if (/\s$/.test(piece.text)) {
+      flush();
+      pendingSpace = true;
+    }
   }
   flush();
   return words;
@@ -135,7 +147,7 @@ function lineFrom(paragraph: Element): LyricLine | null {
   const words = mergeIntoWords(pieces);
   const backingWords = mergeIntoWords(backingPieces);
   const backing = backingWords.length
-    ? line(backingWords[0]!.startMs, backingWords.map((w) => w.text).join(' '), { words: backingWords })
+    ? line(backingWords[0]!.startMs, joinWords(backingWords), { words: backingWords })
     : null;
   if (!words.length) {
     const text = paragraph.textContent?.trim() ?? '';
@@ -145,7 +157,7 @@ function lineFrom(paragraph: Element): LyricLine | null {
     return line(begin, text, { sungUntilMs: end !== null && end > begin ? end : null });
   }
   const begin = ttmlTime(paragraph.getAttribute('begin')) ?? words[0]!.startMs;
-  return line(Math.min(begin, words[0]!.startMs), words.map((w) => w.text).join(' '), { words, background: backing });
+  return line(Math.min(begin, words[0]!.startMs), joinWords(words), { words, background: backing });
 }
 
 export function parseTtml(ttml: string): LyricLine[] {
@@ -216,7 +228,7 @@ export function parseEnhancedLrc(lrc: string): LyricLine[] {
     });
     const words = wordsFromRuns(runs);
     if (!words.length) return;
-    lines.push(line(Math.min(row.timeMs, words[0]!.startMs), words.map((w) => w.text).join(' '), { words }));
+    lines.push(line(Math.min(row.timeMs, words[0]!.startMs), joinWords(words), { words }));
   });
   return withInstrumentalGaps(lines);
 }

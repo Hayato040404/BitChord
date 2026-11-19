@@ -5,6 +5,7 @@ import {
   type BridgeMethod,
   type BridgeResponse,
   type ParamsOf,
+  type PortableSession,
   type ResultOf,
   type DiscordState,
   type SpotifyAuthState,
@@ -98,7 +99,7 @@ function avatarOf(url: string | null | undefined): HTMLElement {
   return image;
 }
 
-function button(text: string, onClick: () => void, title?: string): HTMLElement {
+function button(text: string, onClick: () => void, title?: string): HTMLButtonElement {
   const action = el('button', 'action', text);
   if (title) action.title = title;
   action.onclick = onClick;
@@ -181,6 +182,7 @@ function render(): void {
 function setYoutube(state: YtAuthState): void {
   youtubeState = state;
   render();
+  renderSession();
 }
 function setSpotify(state: SpotifyAuthState): void {
   spotifyState = state;
@@ -195,9 +197,64 @@ document.getElementById('version')!.textContent = `v${browser.runtime.getManifes
 const site = document.getElementById('site') as HTMLAnchorElement;
 site.href = __SITE_ORIGINS__[0] ?? '#';
 
+/**
+ * The session file for a phone or tablet: written here, downloaded here. The
+ * page never sees it (background.ts refuses `yt.exportSession` to site
+ * origins), so the only copy is the file the user chose to keep.
+ */
+const sessionList = document.getElementById('session')!;
+
+function download(session: PortableSession): void {
+  const name = `bitchord-session-${(session.youtube.account?.name ?? 'youtube').replace(/[^\w.-]+/g, '-').toLowerCase()}-${new Date(session.exportedAt).toISOString().slice(0, 10)}.json`;
+  const blob = new Blob([JSON.stringify(session, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = el('a', 'action', 'Download');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+function sessionRow(state: YtAuthState | null): HTMLLIElement | null {
+  if (!state?.signedIn) return null;
+  const row = el('li', 'row account');
+  const who = el('span', 'who');
+  who.append(
+    el('span', 'title', 'Use on a phone'),
+    el('span', 'detail', 'Export a session file to import there'),
+  );
+  const action = button('Export', () => {
+    action.disabled = true;
+    action.textContent = 'Exporting…';
+    call('yt.exportSession', {})
+      .then((session) => {
+        download(session);
+        action.textContent = 'Exported';
+        setTimeout(() => {
+          action.disabled = false;
+          action.textContent = 'Export';
+        }, 2000);
+      })
+      .catch((error: unknown) => {
+        action.textContent = 'Try again';
+        action.title = error instanceof Error ? error.message : String(error);
+        action.disabled = false;
+      });
+  });
+  action.title = 'Downloads a file holding this YouTube session. Anyone with it can act as you: keep it private, and delete it after importing.';
+  row.append(avatarOf(state.active?.avatarUrl), who, action);
+  return row;
+}
+
 render();
 call('yt.authState', {})
   .then(setYoutube)
   .catch(() => list.replaceChildren(simpleRow('YouTube Music', 'Couldn’t read the session')));
 call('spotify.authState', {}).then(setSpotify).catch(() => undefined);
 call('discord.state', {}).then(setDiscord).catch(() => undefined);
+
+function renderSession(): void {
+  const row = sessionRow(youtubeState);
+  sessionList.hidden = !row;
+  sessionList.replaceChildren(...(row ? [row] : []));
+}

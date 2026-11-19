@@ -17,6 +17,12 @@ export interface LyricWord {
   startMs: number;
   endMs: number;
   text: string;
+  /**
+   * Whether the provider wrote whitespace before this word. Japanese, Chinese
+   * and Thai lyrics are written without spaces, so their words sit against one
+   * another; drawing a space there turns 寒さが into 寒 さ が.
+   */
+  spaceBefore: boolean;
   /** Empty for a word nobody split, which is most of them. */
   syllables: LyricSyllable[];
 }
@@ -75,6 +81,39 @@ const UNSPACED = /[㐀-鿿぀-ヿ　-〿＀-￯฀-๿]/;
 const isWhitespace = (c: string | undefined) => c !== undefined && /\s/.test(c);
 
 /**
+ * Whether two pieces sit against each other with nothing typed between them.
+ * Han, kana, CJK punctuation, full-width forms and Thai are written without
+ * spaces between words, so a space written between such neighbours is an
+ * artifact of the model (which trims each run) and not part of the lyric:
+ * drawn, it reads "寒 さ が" instead of "寒さが".
+ */
+export function joinsTight(left: string, right: string): boolean {
+  const a = left.at(-1);
+  const b = right[0];
+  if (a === undefined || b === undefined) return false;
+  if (isWhitespace(a) || isWhitespace(b)) return false;
+  return UNSPACED.test(a) && UNSPACED.test(b);
+}
+
+/**
+ * Whether a space belongs between two words: wherever the provider wrote one,
+ * and wherever the script spaces its words at all. Never inside a run of
+ * Japanese or Chinese, which is what put a gap between every syllable.
+ */
+export const needsSpace = (previous: LyricWord, word: LyricWord): boolean =>
+  word.spaceBefore || !joinsTight(previous.text, word.text);
+
+/** Words as one line of text, spaced only where the script and the provider say so. */
+export function joinWords(words: LyricWord[]): string {
+  return words.map((word, index) => (index > 0 && needsSpace(words[index - 1]!, word) ? ' ' : '') + word.text).join('');
+}
+
+/** Untimed strings from a provider, spaced by the script alone (no word marks to go on). */
+export function joinedText(pieces: string[]): string {
+  return pieces.map((piece, index) => (index > 0 && !joinsTight(pieces[index - 1]!, piece) ? ' ' : '') + piece).join('');
+}
+
+/**
  * Glues runs into words. A run that neither ends in whitespace nor is followed
  * by one starting with it is the front of a word that carries on. Han, kana
  * and Thai never glue, and a line with no whitespace anywhere isn't stating
@@ -87,8 +126,13 @@ export function wordsFromRuns(runs: TimedRun[], spacingIsExplicit = false): Lyri
   let parts: LyricSyllable[] = [];
   let start = 0;
   let end = 0;
+  // Whitespace seen since the last word ended, and whether the word in hand follows it.
+  let pendingSpace = false;
+  let spaceBefore = false;
   const flush = () => {
-    if (current) words.push({ startMs: start, endMs: Math.max(start, end), text: current, syllables: normalizedSyllables(parts, current.length) });
+    if (current) {
+      words.push({ startMs: start, endMs: Math.max(start, end), text: current, spaceBefore, syllables: normalizedSyllables(parts, current.length) });
+    }
     current = '';
     parts = [];
   };
@@ -96,11 +140,16 @@ export function wordsFromRuns(runs: TimedRun[], spacingIsExplicit = false): Lyri
     const content = run.raw.trim();
     if (!content) {
       flush();
+      pendingSpace = true;
       continue;
     }
     const joins =
       glue && current.length > 0 && !isWhitespace(run.raw[0]) && !UNSPACED.test(current.at(-1)!) && !UNSPACED.test(content[0]!);
-    if (!joins) flush();
+    if (!joins) {
+      flush();
+      spaceBefore = pendingSpace || isWhitespace(run.raw[0]);
+    }
+    pendingSpace = false;
     if (!current) {
       start = run.startMs;
       end = run.startMs;
@@ -110,7 +159,10 @@ export function wordsFromRuns(runs: TimedRun[], spacingIsExplicit = false): Lyri
     const runEnd = Math.max(run.startMs, run.endMs);
     parts.push({ startMs: run.startMs, endMs: runEnd, startChar: from, endChar: current.length });
     end = Math.max(end, runEnd);
-    if (!glue || isWhitespace(run.raw.at(-1))) flush();
+    if (!glue || isWhitespace(run.raw.at(-1))) {
+      flush();
+      pendingSpace = isWhitespace(run.raw.at(-1));
+    }
   }
   flush();
   return words;
@@ -156,7 +208,7 @@ function wordStartingAt(words: LyricWord[], offset: number): number | null {
   for (let index = 0; index < words.length; index++) {
     if (at === offset) return index;
     if (at > offset) return null;
-    at += words[index]!.text.length + 1;
+    at += words[index]!.text.length + (index > 0 && needsSpace(words[index - 1]!, words[index]!) ? 1 : 0);
   }
   return null;
 }

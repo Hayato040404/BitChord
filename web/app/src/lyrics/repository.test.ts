@@ -8,7 +8,7 @@ vi.mock('./http', () => ({ lyricsGet: async () => null }));
 vi.mock('./providers', () => ({
   lrclib: async () => ({ lines: [line(1000, 'line timed')], ttml: '<tt/>' }),
   lyricsPlus: async () => ({
-    lines: [line(1000, 'word', { words: [{ startMs: 1000, endMs: 1500, text: 'word', syllables: [] }] })],
+    lines: [line(1000, 'word', { words: [{ startMs: 1000, endMs: 1500, text: 'word', spaceBefore: false, syllables: [] }] })],
     ttml: '<tt/>',
   }),
 }));

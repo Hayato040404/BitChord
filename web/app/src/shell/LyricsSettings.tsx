@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useRelayAvailable } from '@/extension/backend';
 import { getBridge } from '@/extension/bridge';
 import { LYRIC_EXTENSION_ORIGINS as EXTENSION_ORIGINS } from '@/lyrics/http';
 import { useLyricsSettings } from '@/lyrics/settings';
@@ -25,6 +26,8 @@ export function LyricsSettings({ onClose }: { onClose: () => void }) {
     useLyricsSettings();
   const [granted, setGranted] = useState<string[] | null>(null);
   const [key, setKey] = useState(paxsenixKey);
+  const relay = useRelayAvailable();
+  const bridge = getBridge();
 
   useEffect(() => {
     const check = () =>
@@ -40,7 +43,7 @@ export function LyricsSettings({ onClose }: { onClose: () => void }) {
       window.removeEventListener('focus', check);
       window.removeEventListener('keydown', onKey);
     };
-  }, [onClose]);
+  }, [bridge, onClose]);
 
   const missing = granted ? EXTENSION_ORIGINS.filter((o) => !granted.includes(o)) : [];
 
@@ -97,16 +100,25 @@ export function LyricsSettings({ onClose }: { onClose: () => void }) {
             </span>
           </label>
 
-          <h3 className={section}>Extension access</h3>
-          {granted === null ? (
-            <p className={note}>KuGou, Musixmatch, Genius and PaxSenix need the BitChord extension.</p>
+          <h3 className={section}>Provider access</h3>
+          {!bridge && relay ? (
+            <p className={note}>
+              KuGou, Musixmatch, Genius and PaxSenix are fetched through this site’s relay on this device, so no
+              extension is needed here.
+            </p>
+          ) : granted === null ? (
+            <p className={note}>
+              {bridge
+                ? 'KuGou, Musixmatch, Genius and PaxSenix need the BitChord extension.'
+                : 'KuGou, Musixmatch, Genius and PaxSenix need the extension or a deployed relay.'}
+            </p>
           ) : missing.length ? (
             <div className="flex items-center gap-3">
               <p className={note}>
                 KuGou, Musixmatch, Genius and PaxSenix don’t let web pages ask them directly. Allow the extension to,
                 once.
               </p>
-              <button className="flex-none rounded-[14px] bg-key px-3.5 py-1.5 type-callout-emphasized text-white" onClick={() => void getBridge()?.call('lyrics.requestPermissions', { origins: missing })}>
+              <button className="flex-none rounded-[14px] bg-key px-3.5 py-1.5 type-callout-emphasized text-white" onClick={() => void bridge?.call('lyrics.requestPermissions', { origins: missing })}>
                 Allow
               </button>
             </div>

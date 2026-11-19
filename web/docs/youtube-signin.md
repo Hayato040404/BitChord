@@ -2,6 +2,8 @@
 
 Prompt §5.3. There's no login screen: BitChord uses the YouTube session the browser already has, through the extension. The cookies and the signature never reach the page; it only gets names, pictures and InnerTube responses.
 
+Without the extension (a phone), the page instead reads a session file the extension exported, and signs requests itself; [`portable-no-extension.md`](portable-no-extension.md) covers that path. Everything below describes the extension's.
+
 ## How a signed-in request travels
 
 1. YouTube.js runs in the page as a second instance (`getSignedInnertube`, `app/src/playback/youtube/innertube.ts`). It is marked `logged_in` so its library calls aren't refused, but it holds no cookie and adds no credentials.

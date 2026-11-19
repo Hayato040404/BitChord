@@ -57,6 +57,8 @@ export function useKeyboardShortcuts() {
         const ui = useUi.getState();
         // A menu or dialog over the player closes first, on its own.
         if ((event.target as HTMLElement | null)?.closest('[role="menu"], [role="dialog"]:not([data-full-screen])')) return;
+        // The now-playing sheet runs its own Escape (nested lyrics/queue first).
+        if (ui.nowPlayingOpen) return;
         if (ui.fullScreen) ui.setFullScreen(false);
         else if (ui.sidePanel) ui.closeSidePanel();
         return;

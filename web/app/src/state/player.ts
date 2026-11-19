@@ -1,9 +1,8 @@
-import type { DetectedExtension } from '@bitchord/shared/bridge';
 import { create } from 'zustand';
 import type { Track } from '@/data/music/types';
-import { extensionQueryKey } from '@/extension/useExtension';
+import { backendSnapshot } from '@/extension/backend';
 import { artworkAtPixels } from '@/lib/artwork';
-import { queryClient } from '@/lib/queryClient';
+import { relayIsCrossOrigin } from '@/portable/relay';
 import { extendStation } from '@/playback/queue/builder';
 import {
   applyJump,
@@ -21,7 +20,7 @@ import {
   type QueueSource,
 } from '@/playback/queue/timeline';
 import { trackLog } from '@/playback/trackLog';
-import type { LoadedTrack, StreamStats, YouTubeEngine } from '@/playback/youtube/engine';
+import type { LoadedTrack, PlaybackEngine, StreamStats } from '@/playback/youtube/engine';
 import type { AutomixGraph, AutoDJSnapshot } from '@/playback/automix';
 
 export interface NowPlaying {
@@ -138,7 +137,7 @@ function saveSettings(state: Settings) {
 // ---- Decks: two engines, so a crossfade can play the next track under this one ------------
 
 interface Deck {
-  engine: YouTubeEngine;
+  engine: PlaybackEngine;
   audio: HTMLAudioElement;
   /** The crossfade's share of the volume, 0–1. */
   gain: number;
@@ -151,6 +150,26 @@ let active = 0;
 /** The audio element in front, if playback has started at least once. */
 export function getAudio(): HTMLAudioElement | null {
   return decks?.[active]?.audio ?? null;
+}
+
+/**
+ * The playing track's real duration, in seconds.
+ *
+ * YouTube's metadata is the truth here: iPhone AVFoundation counts a
+ * fragmented MP4's `moov` duration *and* all of its fragments, so a 3:33 song
+ * reports 7:06 and keeps "playing" silence after 3:33. Native HLS avoids that,
+ * but the progressive fallback must not trust the element's figure either.
+ */
+export function getDuration(): number {
+  const known = usePlayer.getState().nowPlaying?.durationSec ?? 0;
+  const native = getAudio()?.duration ?? 0;
+  if (Number.isFinite(known) && known > 0) {
+    // A close native figure is the more precise one (HLS, Chrome, desktop
+    // DASH); a doubled one is the iPhone bug and must not be shown.
+    if (Number.isFinite(native) && native > 0 && Math.abs(native - known) <= Math.max(2, known * 0.02)) return native;
+    return known;
+  }
+  return Number.isFinite(native) && native > 0 ? native : 0;
 }
 
 /**
@@ -178,14 +197,23 @@ function getDecks(): Promise<Deck[]> {
   decksPromise ??= (async () => {
     // Shaka, YouTube.js and googlevideo are the heavy part of the app; they
     // load on the first play, not with the page (prompt §3).
+    const backend = backendSnapshot();
     const { YouTubeEngine } = await import('@/playback/youtube/engine');
+    // Without the extension, the portable engine streams progressive audio
+    // through the site's relay (playback/youtube/portableEngine.ts); Shaka
+    // and the WebPO machinery are only loaded for the extension's path.
+    const PortableEngine =
+      backend === 'extension' ? null : (await import('@/playback/youtube/portableEngine')).PortableEngine;
     decks = [0, 1].map((n) => {
       const audio = new Audio();
       audio.preload = 'auto';
       // Media from another origin is silent inside an AudioContext unless it
-      // is fetched with CORS (prompt §6, the Web Audio caveat).
-      audio.crossOrigin = 'anonymous';
-      const engine = new YouTubeEngine(audio);
+      // is fetched with CORS (prompt §6, the Web Audio caveat). The relay is
+      // normally our own origin; when it isn't (a static host with the relay
+      // elsewhere) it needs CORS, and it serves it. The extension's path
+      // needs it for googlevideo.
+      audio.crossOrigin = PortableEngine ? (relayIsCrossOrigin() ? 'anonymous' : null) : 'anonymous';
+      const engine: PlaybackEngine = PortableEngine ? new PortableEngine(audio) : new YouTubeEngine(audio);
       const deck: Deck = { engine, audio, gain: 1 };
       engine.onFatal = (videoId, message) => {
         if (decks?.[active] !== deck) return;
@@ -367,9 +395,9 @@ function syncAutomix() {
   });
 }
 
-function extensionReady(): boolean {
-  const detected = queryClient.getQueryData<DetectedExtension | null>(extensionQueryKey);
-  return !!detected?.info.capabilities.includes('yt');
+/** Whether YouTube can be reached at all: the extension, or the relay without one. */
+function youtubeReady(): boolean {
+  return backendSnapshot() !== null;
 }
 
 const artistNames = (track: Track) => track.artists.map((a) => a.name).join(', ');
@@ -556,7 +584,9 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
     const audio = getAudio();
     if (!audio) return;
     cancelCrossfade();
-    audio.currentTime = Math.max(0, Math.min(seconds, audio.duration || seconds));
+    // Clamp to the metadata duration when the element's own is the doubled one.
+    const limit = getDuration();
+    audio.currentTime = Math.max(0, limit > 0 ? Math.min(seconds, limit) : seconds);
     updatePositionState();
     intent();
   },
@@ -674,12 +704,12 @@ async function startAt(at: number, { startSec = 0, auto = false, autoplay = true
   cancelCrossfade();
   const token = ++loadToken;
 
-  if (!extensionReady()) {
+  if (!youtubeReady()) {
     usePlayer.setState({
       index: at,
       nowPlaying: { ...hintOf(entry.track), title: entry.track.title || 'Can’t play this here yet' },
       status: 'error',
-      error: 'YouTube playback needs the BitChord extension.',
+      error: 'YouTube playback needs the BitChord extension (or this site’s relay).',
     });
     return;
   }
@@ -900,7 +930,8 @@ function maybeCrossfade() {
   const state = usePlayer.getState();
   if (!decks || fade || state.automix || !state.crossfadeSec || state.status !== 'playing') return;
   const front = decks[active]!;
-  const remaining = front.audio.duration - front.audio.currentTime;
+  const duration = getDuration();
+  const remaining = (duration > 0 ? duration : front.audio.duration) - front.audio.currentTime;
   if (!Number.isFinite(remaining) || remaining > state.crossfadeSec || remaining < 1) return;
   const plan = planNext(true);
   if (!plan || plan.kind !== 'index') return;
@@ -926,7 +957,7 @@ function maybeCrossfade() {
       applyTrack(track, entry.track);
       afterTrackStarted();
 
-      const length = Math.max(0.5, Math.min(from.audio.duration - from.audio.currentTime, usePlayer.getState().crossfadeSec)) * 1000;
+      const length = Math.max(0.5, Math.min(remaining, usePlayer.getState().crossfadeSec)) * 1000;
       const started = performance.now();
       const step = () => {
         if (!fade || fade.token !== token) return;
@@ -1003,8 +1034,14 @@ function bindElement(deck: Deck, n: number) {
     if (!element.ended) set('paused');
   });
   element.addEventListener('waiting', () => set('buffering'));
-  element.addEventListener('ended', () => {
-    if (!inFront() || holding) return;
+  /** The end is handled once per pass, whether the element said so or the metadata did. */
+  let endHandled = false;
+  const finish = () => {
+    if (!inFront() || holding || endHandled) return;
+    // A fade that already has its next track running owns the handoff; a fade
+    // still loading is abandoned here, exactly as it is on a native end.
+    if (fade && !fade.pending) return;
+    endHandled = true;
     endedListeners.forEach((listener) => listener());
     // The track ran out before the crossfade's next one could start: give up
     // on the fade and play the next track here. Waiting on it was silence for
@@ -1015,9 +1052,27 @@ function bindElement(deck: Deck, n: number) {
     if (graph?.dj.forceHandoff()) return;
     // The queue moving on by itself is the user's intent, as far as a party is concerned.
     void advance(true).then(intent);
+  };
+  element.addEventListener('loadstart', () => {
+    endHandled = false;
   });
+  element.addEventListener('ended', finish);
   element.addEventListener('timeupdate', () => {
     if (!inFront()) return;
+    const duration = getDuration();
+    if (duration > 0) {
+      // A backward seek, or repeat-one, starts another pass at this source.
+      if (element.currentTime < duration - 1) endHandled = false;
+      // The iPhone progressive fallback reports twice the real duration. Only
+      // then is the metadata's end authoritative; a correct native duration
+      // (HLS, Chrome, desktop DASH) still ends by itself.
+      const known = usePlayer.getState().nowPlaying?.durationSec ?? 0;
+      const implausible = known > 0 && Number.isFinite(element.duration) && element.duration > known * 1.25;
+      if (implausible && !element.paused && element.currentTime >= known - 0.25) {
+        finish();
+        return;
+      }
+    }
     maybeCrossfade();
     ensureAutoplay();
   });
@@ -1079,12 +1134,13 @@ function updateMediaSession(track: NowPlaying | null) {
 
 function updatePositionState() {
   const audio = getAudio();
-  if (!audio || !('mediaSession' in navigator) || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+  const duration = getDuration();
+  if (!audio || !('mediaSession' in navigator) || duration <= 0) return;
   try {
     navigator.mediaSession.setPositionState({
-      duration: audio.duration,
+      duration,
       playbackRate: audio.playbackRate,
-      position: Math.min(audio.currentTime, audio.duration),
+      position: Math.min(audio.currentTime, duration),
     });
   } catch {
     // Position past duration during a seek; the next event corrects it.

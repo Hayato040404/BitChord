@@ -1,0 +1,70 @@
+name: Pages
+
+# Optional GitHub Pages copy of the web player. Render deploys the app from
+# render.yaml, so this workflow is manual and is not part of the Render path.
+# Pages serves files only, so the relay (web/relay/server.mjs) has to run
+# elsewhere and be named in VITE_RELAY_BASE_URL (web/docs/deploy.md).
+#
+# To use it, set up once in the repository:
+#   Settings → Pages → Source: GitHub Actions
+#   gh variable set VITE_RELAY_BASE_URL --body 'https://relay.example.com'
+#   gh variable set VITE_PARTY_SERVER_URL --body 'https://party.example.com'
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      # A project site lives at /<repo>/, and the app routes under it
+      # (vite.pages.ts writes the 404.html deep links land on). build:site also
+      # packages the extension into app/public/downloads, which `pnpm build`
+      # alone does not.
+      - name: Build
+        working-directory: web
+        run: pnpm build:site
+        env:
+          BITCHORD_BASE: /${{ github.event.repository.name }}/
+          VITE_RELAY_BASE_URL: ${{ vars.VITE_RELAY_BASE_URL }}
+          VITE_PARTY_SERVER_URL: ${{ vars.VITE_PARTY_SERVER_URL || 'https://party.example.com' }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

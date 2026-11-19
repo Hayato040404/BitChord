@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { PrefetchLink } from '@/components/PrefetchLink';
 import { PauseIcon, PlayIcon } from '@/components/icons/Transport';
 import type { ArtistRef, Track } from '@/data/music/types';
+import { useTouchInput } from '@/lib/viewport';
 import { usePlayer } from '@/state/player';
 import { Artwork } from './Artwork';
 import { ExplicitBadge } from './ExplicitBadge';
@@ -90,9 +91,11 @@ interface RowProps {
   position: number;
   fallbackArtwork: string | null | undefined;
   onPlayRow: () => void;
+  /** A finger's row has no hover to reveal a play button: the row itself is the button. */
+  touch: boolean;
 }
 
-function Row({ track, variant, position, fallbackArtwork, onPlayRow }: RowProps) {
+function Row({ track, variant, position, fallbackArtwork, onPlayRow, touch }: RowProps) {
   const current = usePlayer((s) => s.nowPlaying?.videoId === track.videoId);
   const playing = usePlayer((s) => s.nowPlaying?.videoId === track.videoId && (s.status === 'playing' || s.status === 'buffering'));
   const togglePlay = usePlayer((s) => s.togglePlay);
@@ -101,12 +104,13 @@ function Row({ track, variant, position, fallbackArtwork, onPlayRow }: RowProps)
 
   return (
     <div
-      className={`${row} ${rowVariant[variant]}`}
+      className={`${row} ${rowVariant[variant]}${touch && !unavailable ? ' cursor-pointer active:bg-tracklist-hover' : ''}`}
       data-variant={variant}
       data-current={current || undefined}
       data-unavailable={unavailable}
       title={unavailable === 'matching' ? 'Looking for this on YouTube Music…' : unavailable === 'missing' ? 'Not found on YouTube Music' : undefined}
       onDoubleClick={onPlay}
+      onClick={touch ? onPlay : undefined}
     >
       <div className={`${cell} gap-3`}>
         <div className={`relative grid w-10 shrink-0 place-items-center${variant === 'playlist' ? ' ms-[7px]' : ''}`}>
@@ -139,7 +143,10 @@ function Row({ track, variant, position, fallbackArtwork, onPlayRow }: RowProps)
               variant === 'playlist' ? 'bg-lockup-hover text-white' : 'text-primary'
             }`}
             aria-label={playing ? `Pause ${track.title}` : `Play ${track.title}`}
-            onClick={onPlay}
+            onClick={(event) => {
+              event.stopPropagation();
+              onPlay();
+            }}
             disabled={!!unavailable}
           >
             {playing ? <PauseIcon size={variant === 'playlist' ? 18 : 16} /> : <PlayIcon size={variant === 'playlist' ? 18 : 16} />}
@@ -181,14 +188,16 @@ function Row({ track, variant, position, fallbackArtwork, onPlayRow }: RowProps)
         </>
       )}
       <div className={`${cell} ${time[variant]} ${dimmed}`}>
-        {/* The ⋯ button (TrackMenu) takes the time's place on hover, as Apple's rows do. */}
-        <span className={unavailable ? undefined : 'group-focus-within/row:invisible group-hover/row:invisible group-has-[[data-open]]/row:invisible'}>
+        {/* The ⋯ button (TrackMenu) takes the time's place on hover, as Apple's rows do. On a phone it's always there. */}
+        <span className={unavailable ? undefined : touch ? 'hidden' : 'group-focus-within/row:invisible group-hover/row:invisible group-has-[[data-open]]/row:invisible'}>
           {unavailable === 'missing' ? 'Not found' : formatDuration(track.durationSec)}
         </span>
         {!unavailable && (
           <TrackMenu
             track={track}
-            className="absolute end-2.5 hidden size-7 place-items-center rounded-full text-key group-focus-within/row:grid group-hover/row:grid hover:bg-quinary data-open:grid"
+            className={`absolute end-2.5 size-7 place-items-center rounded-full text-key ${
+              touch ? 'grid' : 'hidden group-focus-within/row:grid group-hover/row:grid hover:bg-quinary data-open:grid'
+            }`}
           />
         )}
       </div>
@@ -213,6 +222,7 @@ function Header() {
  * are virtualized against the page's scroll container (prompt §3).
  */
 export function TrackList({ tracks, variant, fallbackArtwork, fallbackArtists, onNearEnd, source }: TrackListProps) {
+  const touch = useTouchInput();
   const playRow = (i: number) => {
     // Rows from another catalogue that found no YouTube Music song stay out of the queue.
     if (source) {
@@ -265,6 +275,7 @@ export function TrackList({ tracks, variant, fallbackArtwork, fallbackArtists, o
                   position={item.index + 1}
                   fallbackArtwork={fallbackArtwork}
                   onPlayRow={() => playRow(item.index)}
+                  touch={touch}
                 />
               </div>
             ))}
@@ -278,6 +289,7 @@ export function TrackList({ tracks, variant, fallbackArtwork, fallbackArtists, o
               position={i + 1}
               fallbackArtwork={fallbackArtwork}
               onPlayRow={() => playRow(i)}
+              touch={touch}
             />
           ))
         )}

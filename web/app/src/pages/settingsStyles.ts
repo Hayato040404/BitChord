@@ -37,6 +37,8 @@ export const settingsUi = {
   integration: `${integration} grid-cols-[24px_minmax(0,1fr)_auto]`,
   /** An integration row without the icon square. */
   integrationPlain: `${integration} grid-cols-[minmax(0,1fr)_auto]`,
+  /** What went wrong under a row (a refused session file). */
+  rowProblem: 'px-4 pb-2.5 type-callout text-key',
   integrationIcon: 'grid size-6 place-items-center rounded-[6px] text-white',
   integrationName: 'min-w-0',
   /** Settings: an integration row that opens a page of its own. */

@@ -13,6 +13,7 @@ import { Select } from '@/components/Select';
 import { AUTOMIX_BARS } from '@/playback/automix/choices';
 import { CROSSFADE_CHOICES, usePlayer } from '@/state/player';
 import { AppleMusicIntegration, AppleMusicToggles, CanvasToggle, DiscordIntegration, LyricSourcesAccess, SpotifyIntegration, Toggle } from './IntegrationSettings';
+import { PortableSessionIntegration } from './PortableSessionSettings';
 import { settingsUi } from './settingsStyles';
 
 const LyricsSettings = lazy(() => import('@/shell/LyricsSettings').then((m) => ({ default: m.LyricsSettings })));
@@ -42,7 +43,8 @@ function LinkRow({ to, icon, title, value }: { to: string; icon?: ReactNode; tit
 
 function youtubeText(auth: ReturnType<typeof useYtAuth>): string {
   if (auth.state === 'checking') return 'Checking…';
-  if (auth.state === 'unavailable') return 'Needs the extension';
+  // Neither the extension nor a relay: no way to ask YouTube anything.
+  if (auth.state === 'unavailable') return 'Unavailable here';
   const { browserSignedIn, connected, active } = auth.auth;
   if (!browserSignedIn) return 'Not signed in';
   if (!connected) return 'Disconnected';
@@ -88,21 +90,26 @@ export default function SettingsPage() {
             <span className={settingsUi.integrationName}>YouTube Music</span>
             <span className={settingsUi.value}>{youtubeText(yt)}</span>
           </div>
+          <PortableSessionIntegration />
           <div className={settingsUi.integration}>
             <Glyph Icon={SiSpotify} color="#1ed760" />
             <span className={settingsUi.integrationName}>Spotify</span>
             {present ? <SpotifyIntegration /> : <span className={settingsUi.value}>Needs the extension</span>}
           </div>
-          {present && discord.state === 'ready' && discord.discord.available && (
-            <LinkRow to="/settings/discord" icon={<Glyph Icon={SiDiscord} color="#5865f2" />} title="Discord" value={discordText} />
-          )}
-          <LinkRow
-            to="/extension"
-            icon={<Glyph Icon={MdOutlineExtension} color="#636366" />}
-            title="BitChord Extension"
-            value={present ? `v${extension.extension.info.version}` : 'Not installed'}
-          />
+          <div className={settingsUi.integration}>
+            <Glyph Icon={MdOutlineExtension} color="#636366" />
+            <span className={settingsUi.integrationName}>BitChord Extension</span>
+            <PrefetchLink to="/extension" className={`${settingsUi.value} ${settingsUi.inlineLink}`}>
+              {present ? `v${extension.extension.info.version}` : 'Not installed'}
+              <ChevronRight size={16} />
+            </PrefetchLink>
+          </div>
         </section>
+        {present && discord.state === 'ready' && discord.discord.available && (
+          <section className={`${settingsUi.group} mt-3`}>
+            <LinkRow to="/settings/discord" icon={<Glyph Icon={SiDiscord} color="#5865f2" />} title="Discord" value={discordText} />
+          </section>
+        )}
         <section className={`${settingsUi.group} mt-3 empty:hidden`}>
           <Toggle
             label="Share Listening Activity to YouTube"

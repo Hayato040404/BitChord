@@ -1,7 +1,8 @@
-import { line, lineAlignments, withInstrumentalGaps, wordsFromRuns, type LyricLine, type TimedRun } from './model';
+import { joinWords, joinedText, line, lineAlignments, withInstrumentalGaps, wordsFromRuns, type LyricLine, type TimedRun } from './model';
 import { decodeEntities, parseEnhancedLrc, parseLrc, parseProvider, parseTtml, plainLines, type Parsed } from './parse';
 import { lyricsGet, urlWith } from './http';
 import { appleWebToken } from '@/data/apple/webToken';
+import { uuid } from '@/lib/uuid';
 
 /**
  * Every provider, ported from shared/…/data/lyrics/<Name>.kt. Each takes the
@@ -268,7 +269,7 @@ export function parsePaxSenixTimed(raw: string): LyricLine[] | null {
     const timed = wordsFromRuns(runs, true);
     const untimed = runs.length !== texts.filter((t) => t.trim()).length;
     lines.push(
-      line(Math.min(start, timed[0]?.startMs ?? start), untimed ? texts.map((t) => t.trim()).join(' ') : timed.map((w) => w.text).join(' '), {
+      line(Math.min(start, timed[0]?.startMs ?? start), untimed ? joinedText(texts.map((t) => t.trim())) : joinWords(timed), {
         words: untimed ? [] : timed,
         sungUntilMs: nextLine,
       }),
@@ -355,7 +356,7 @@ export function parseLyricsPlus(response: LyricsPlusResponse): LyricLine[] {
       true,
     );
     let built: LyricLine | null = null;
-    if (words.length) built = line(Math.min(l.time, words[0]!.startMs), words.map((w) => w.text).join(' '), { words });
+    if (words.length) built = line(Math.min(l.time, words[0]!.startMs), joinWords(words), { words });
     else if (l.text?.trim()) built = line(l.time, l.text.trim(), { sungUntilMs: l.duration && l.duration > 0 ? l.time + l.duration : null });
     if (built) sung.push({ line: built, element: l.element });
   }
@@ -557,7 +558,7 @@ export async function lrclib(q: LyricsQuery): Promise<Parsed | null> {
 const MXM = 'https://apic.musixmatch.com/ws/1.1';
 const MXM_APP = 'mobile-app-v1.0';
 const MXM_FALLBACK_SECRET = 'f09016176ba43a1cfd1031fbd6b3d26c';
-const mxmGuid = crypto.randomUUID();
+const mxmGuid = uuid();
 let mxmSecret: string | null = null;
 let mxmToken: string | null = null;
 
@@ -629,7 +630,7 @@ export function parseRichSync(body: string): LyricLine[] {
         runs.push({ startMs: start, endMs: Math.max(start, Math.min(lineEnd, until)), raw: fragment.c });
       });
       const words = wordsFromRuns(runs, true);
-      const text = (entry.x ?? '').trim() || words.map((w) => w.text).join(' ');
+      const text = (entry.x ?? '').trim() || joinWords(words);
       return text ? line(Math.min(lineStart, words[0]?.startMs ?? lineStart), text, { words, sungUntilMs: lineEnd > lineStart ? lineEnd : null }) : null;
     })
     .filter((l): l is LyricLine => !!l)

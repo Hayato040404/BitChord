@@ -42,6 +42,7 @@
   --animate-zoom: zoom 0.2s ease-out;
   --animate-fade-in: fade-in 0.4s ease;
   --animate-enter: enter 0.3s var(--ease-out-panel);
+  --animate-sheet-in: sheet-in 0.26s var(--ease-out-panel);
   --animate-morph: morph 0.32s var(--ease-out-panel);
   --animate-spin: spin 1s linear infinite;
   --animate-shimmer: shimmer 1.6s ease-in-out infinite;
@@ -77,6 +78,12 @@
     from {
       opacity: 0;
       transform: scale(1.02);
+    }
+  }
+  /* A phone's action sheet rising from the bottom edge. */
+  @keyframes sheet-in {
+    from {
+      transform: translateY(100%);
     }
   }
   /* One label melting into the next, as the quality switcher's text changes. */

@@ -8,7 +8,8 @@ import {
 } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { DetectedExtension } from '@bitchord/shared/bridge';
-import { extensionQueryKey, useExtension } from '@/extension/useExtension';
+import { extensionQueryKey } from '@/extension/useExtension';
+import { useBackend } from '@/extension/backend';
 import { useYtAuth, ytAuthSnapshot } from '@/extension/useYtAuth';
 import { queryClient } from '@/lib/queryClient';
 import {
@@ -85,12 +86,14 @@ export const playlistQuery = (id: string) =>
     staleTime: STALE,
   });
 
-/** True once the extension has answered; queries wait on it. */
+/** True once YouTube can be reached: the extension if it's installed, else the site's relay. */
 export function useYouTubeReady(): { ready: boolean; missing: boolean } {
-  const extension = useExtension();
+  const backend = useBackend();
   return {
-    ready: extension.state === 'present' && extension.extension.info.capabilities.includes('yt'),
-    missing: extension.state === 'missing',
+    ready: backend.kind === 'extension' || backend.kind === 'relay',
+    // "missing" now means "no way to reach YouTube at all": a phone without a
+    // relay deployment, or a browser with neither.
+    missing: backend.kind === 'none',
   };
 }
 

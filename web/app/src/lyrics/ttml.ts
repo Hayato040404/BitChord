@@ -1,4 +1,4 @@
-import { isGap, type LyricLine, type LyricWord } from './model';
+import { isGap, needsSpace, type LyricLine, type LyricWord } from './model';
 
 /**
  * Writes lyric lines as the TTML am-lyrics reads (prompt §10.2: every result
@@ -8,7 +8,9 @@ import { isGap, type LyricLine, type LyricWord } from './model';
  *
  * - Word-timed lines: one `<span>` per syllable, adjacent within a word and
  *   separated by a space between words, which is how am-lyrics (like Apple)
- *   tells a syllable from a word.
+ *   tells a syllable from a word. The space is left out between Japanese and
+ *   Chinese words, which are written without one: a space there drew a gap
+ *   between every syllable (寒 さ が instead of 寒さが).
  * - The answering vocal: a `ttm:role="x-bg"` span holding its own spans.
  * - Line-timed lines: a bare `<p begin end>`; am-lyrics sweeps them whole.
  * - Untimed lyrics: paragraphs with no times, which am-lyrics shows unsynced.
@@ -24,18 +26,22 @@ const clock = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
 
 function spansOf(words: LyricWord[]): string {
   return words
-    .map((word) => {
+    .map((word, index) => {
+      const gap = index > 0 && needsSpace(words[index - 1]!, word) ? ' ' : '';
       if (!word.syllables.length) {
-        return `<span begin="${clock(word.startMs)}" end="${clock(word.endMs)}">${escape(word.text)}</span>`;
+        return `${gap}<span begin="${clock(word.startMs)}" end="${clock(word.endMs)}">${escape(word.text)}</span>`;
       }
-      return word.syllables
-        .map(
-          (s) =>
-            `<span begin="${clock(s.startMs)}" end="${clock(s.endMs)}">${escape(word.text.slice(s.startChar, s.endChar))}</span>`,
-        )
-        .join('');
+      return (
+        gap +
+        word.syllables
+          .map(
+            (s) =>
+              `<span begin="${clock(s.startMs)}" end="${clock(s.endMs)}">${escape(word.text.slice(s.startChar, s.endChar))}</span>`,
+          )
+          .join('')
+      );
     })
-    .join(' ');
+    .join('');
 }
 
 export function writeTtml(lines: LyricLine[], language = 'en'): string {

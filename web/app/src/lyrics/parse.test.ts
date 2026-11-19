@@ -101,4 +101,24 @@ describe('TTML writer', () => {
     expect(ttml).toContain('itunes:timing="None"');
     expect(ttml).not.toContain('begin=');
   });
+  it('keeps Japanese words flush and English words apart', () => {
+    const japanese = writeTtml(parseKaraoke('[1000,2000](1000,250,0)寒(1250,250,0)さが(1500,250,0)心地(1750,250,0)よくて'));
+    expect(japanese).toContain('>寒</span><span');
+    expect(japanese).not.toContain('</span> <span');
+    const english = writeTtml(parseEnhancedLrc('[00:27.39]<00:27.39>I <00:27.54>been <00:27.74>enough')!);
+    expect(english).toContain('</span> <span begin="27.540"');
+  });
+});
+
+describe('CJK word spacing', () => {
+  it('reads words written without spaces as one line, and keeps a typed space', () => {
+    const japanese = parseKaraoke('[1000,2000](1000,250,0)寒(1250,250,0)さが(1500,250,0)心(1750,250,0)地(2000,250,0)よくて');
+    expect(japanese[0]!.text).toBe('寒さが心地よくて');
+    const mixed = parseTtml(
+      '<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="0" end="4">' +
+        '<span begin="0" end="1">あれ</span> <span begin="1" end="3">なんで</span><span begin="3" end="4">恋</span>' +
+        '</p></div></body></tt>',
+    );
+    expect(mixed.filter((l) => l.text)[0]!.text).toBe('あれ なんで恋');
+  });
 });

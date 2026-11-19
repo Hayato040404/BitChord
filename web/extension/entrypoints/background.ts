@@ -12,6 +12,7 @@ import {
 } from '@bitchord/shared/bridge';
 import * as discord from '../lib/discord';
 import { grantedOrigins, lyricsFetch, requestOrigins } from '../lib/lyricsFetch';
+import { exportSession } from '../lib/portableSession';
 import { installRules } from '../lib/rules';
 import { authState, invalidateAccounts, isSessionCookie, selectChannel, setConnected } from '../lib/ytAuth';
 import * as spotify from '../lib/spotify';
@@ -26,6 +27,13 @@ const OWN_ORIGIN = new URL(browser.runtime.getURL('/')).origin;
 /** Grows as each phase lands its methods; Discord only in builds that include it. */
 const CAPABILITIES: Capability[] = ['yt', 'yt.auth', 'yt.stats', 'lyrics', 'spotify', ...(discord.AVAILABLE ? (['discord'] as const) : [])];
 
+/**
+ * Methods that hand out credentials, served only to the extension's own pages
+ * (the popup). The site's one copy of them is a session file the page imports
+ * for itself; BitChord's page must never be able to read one back out.
+ */
+const OWN_PAGES_ONLY: ReadonlySet<string> = new Set(['yt.exportSession']);
+
 function originOf(sender: Browser.runtime.MessageSender): string | null {
   if (sender.origin) return sender.origin;
   try {
@@ -37,7 +45,12 @@ function originOf(sender: Browser.runtime.MessageSender): string | null {
 
 function allowed(sender: Browser.runtime.MessageSender): boolean {
   const origin = originOf(sender);
-  return !!origin && (ALLOWED_ORIGINS.has(origin) || (origin === OWN_ORIGIN && sender.id === browser.runtime.id));
+  return !!origin && (ALLOWED_ORIGINS.has(origin) || isOwnPage(sender));
+}
+
+/** The popup and the extension's other pages, which run at `chrome-extension://<id>/`. */
+function isOwnPage(sender: Browser.runtime.MessageSender): boolean {
+  return originOf(sender) === OWN_ORIGIN && sender.id === browser.runtime.id;
 }
 
 function failure(id: string, error: unknown): BridgeResponse {
@@ -53,13 +66,18 @@ function failure(id: string, error: unknown): BridgeResponse {
   return errorResponse(id, code, error instanceof Error ? error.message : String(error));
 }
 
-async function handle(request: BridgeRequest): Promise<BridgeResponse> {
+async function handle(request: BridgeRequest, ownPage: boolean): Promise<BridgeResponse> {
   if (request.protocol !== BRIDGE_PROTOCOL) {
     return errorResponse(
       request.id,
       'protocol',
       `The page speaks bridge protocol ${request.protocol}; this extension speaks ${BRIDGE_PROTOCOL}. Update whichever is older.`,
     );
+  }
+  // Checked here as well as at the listener: a credential must not be reachable
+  // from a site origin even if one were ever added to the allow-list by mistake.
+  if (OWN_PAGES_ONLY.has(request.method) && !ownPage) {
+    return errorResponse(request.id, 'forbidden', `${request.method} is available only from the extension's own pages.`);
   }
   try {
     switch (request.method) {
@@ -87,6 +105,8 @@ async function handle(request: BridgeRequest): Promise<BridgeResponse> {
         broadcast({ event: 'yt.authState', data: state });
         return okResponse<'yt.setConnected'>(request.id, state);
       }
+      case 'yt.exportSession':
+        return okResponse<'yt.exportSession'>(request.id, await exportSession());
       case 'lyrics.fetch':
         return okResponse<'lyrics.fetch'>(request.id, await lyricsFetch((request as BridgeRequest<'lyrics.fetch'>).params));
       case 'lyrics.permissions':
@@ -170,7 +190,7 @@ function listener(
     sendResponse(errorResponse(message.id, 'forbidden', `Origin ${originOf(sender) ?? 'unknown'} isn't allowed.`));
     return false;
   }
-  handle(message)
+  handle(message, isOwnPage(sender))
     .catch((error: unknown) => errorResponse(message.id, 'internal', String(error)))
     .then(sendResponse);
   return true; // answering asynchronously

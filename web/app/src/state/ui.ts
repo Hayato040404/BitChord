@@ -10,6 +10,13 @@ interface UiState {
   /** The full-screen player: artwork, controls and lyrics over the artwork's mesh (report §7). */
   fullScreen: boolean;
   setFullScreen: (open: boolean) => void;
+  /**
+   * The phone's now-playing screen: Apple Music's, opened from the mini
+   * player. A separate flag from `fullScreen`, which is the desktop's
+   * two-column overlay; only one of them is ever on screen.
+   */
+  nowPlayingOpen: boolean;
+  setNowPlayingOpen: (open: boolean) => void;
   /** The sidebar as a drawer, below 484px where it's otherwise hidden. */
   drawerOpen: boolean;
   setDrawerOpen: (open: boolean) => void;
@@ -26,6 +33,8 @@ export const useUi = create<UiState>()((set) => ({
   closeSidePanel: () => set({ sidePanel: null }),
   fullScreen: false,
   setFullScreen: (fullScreen) => set({ fullScreen }),
+  nowPlayingOpen: false,
+  setNowPlayingOpen: (nowPlayingOpen) => set({ nowPlayingOpen }),
   drawerOpen: false,
   setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
   installBannerDismissed: sessionStorage.getItem(BANNER_KEY) === '1',

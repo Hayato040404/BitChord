@@ -369,13 +369,15 @@ const panel = 'group/panel relative isolate flex min-h-0 flex-1 flex-col overflo
 // The full-screen player's column (report §7): lines 26px, then 30px from 980px, 36px from 1320px and 42px from 1680px.
 const fullSizes =
   '[--bitchord-lyric-size:26px] min-[980px]:[--bitchord-lyric-size:30px] min-[1320px]:[--bitchord-lyric-size:36px] min-[1680px]:[--bitchord-lyric-size:42px]';
+// The phone's lyrics sheet: Apple's size, which is between the desktop panel's and its full-screen column.
+const mobileSizes = '[--bitchord-lyric-size:24px]';
 
 /**
  * The lyrics, with their provider picker and empty states: the side panel
  * (report §7), and the right-hand column of the full-screen player, where the
  * lines are larger and the player's mesh stands in for the Canvas.
  */
-export function LyricsPanel({ variant = 'panel' }: { variant?: 'panel' | 'full' }) {
+export function LyricsPanel({ variant = 'panel' }: { variant?: 'panel' | 'full' | 'mobile' }) {
   const lyrics = useLyrics();
   const hasTrack = usePlayer((s) => s.nowPlaying !== null);
   const videoId = usePlayer((s) => s.nowPlaying?.videoId ?? '');
@@ -387,15 +389,16 @@ export function LyricsPanel({ variant = 'panel' }: { variant?: 'panel' | 'full' 
   const fontReady = useLyricFont();
   const result = lyrics.data;
   const full = variant === 'full';
-  const empty = full
+  const mobile = variant === 'mobile';
+  const empty = full || mobile
     ? 'flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center type-title-3 text-secondary'
     : 'flex flex-1 flex-col items-center justify-center gap-2 px-6 pb-20 text-center type-[400_12px/16px] text-secondary';
-  const emptyTitle = full ? 'type-title-1-emphasized text-primary' : 'type-[600_12px/16px]';
+  const emptyTitle = full || mobile ? 'type-title-1-emphasized text-primary' : 'type-[600_12px/16px]';
 
   return (
-    <div className={full ? `${panel} ${fullSizes}` : panel}>
+    <div className={full ? `${panel} ${fullSizes}` : mobile ? `${panel} ${mobileSizes}` : panel}>
       {canvas && variant === 'panel' && <CanvasBackdrop url={canvas} />}
-      <ProviderPicker current={result?.source ?? null} full={full} />
+      <ProviderPicker current={result?.source ?? null} full={full || mobile} />
       {/* Only worth raising when nothing was found: then the hosts behind the extension might have it. */}
       {ungranted.length > 0 && !result && !lyrics.isFetching && <PermissionNotice origins={ungranted} />}
       {!hasTrack ? (
@@ -408,7 +411,7 @@ export function LyricsPanel({ variant = 'panel' }: { variant?: 'panel' | 'full' 
           <Loader2 size={20} className="animate-spin" />
         </div>
       ) : result ? (
-        <LyricsView ttml={result.ttml} full={full} />
+        <LyricsView ttml={result.ttml} full={full || mobile} />
       ) : picked ? (
         <div className={empty}>
           <p className={emptyTitle}>Not on {sourceById(picked)?.label ?? 'this provider'}</p>

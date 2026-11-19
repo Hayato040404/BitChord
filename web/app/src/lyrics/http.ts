@@ -1,5 +1,6 @@
 import { BridgeCallError } from '@bitchord/shared/bridge';
 import { getBridge } from '@/extension/bridge';
+import { relayUrl } from '@/portable/relay';
 
 /**
  * The providers' one way out (LyricsHttp.kt): a GET that answers with the body
@@ -8,9 +9,10 @@ import { getBridge } from '@/extension/bridge';
  *
  * - `direct`: from the page, for the hosts that allow cross-site requests;
  *   if the browser blocks it anyway (BetterLyrics allows some origins and
- *   not others), it's retried through the extension.
+ *   not others), it's retried through the extension and then the relay.
  * - `extension`: always through the extension's `lyrics.fetch`, for hosts
- *   that send no CORS headers or need headers a page can't set.
+ *   that send no CORS headers or need headers a page can't set. A phone has
+ *   no extension, so it gets the same hosts through `/api/lyrics` instead.
  */
 
 /** Hosts the page can't reach itself: KuGou, Musixmatch, Genius and Apple's catalogue (for PaxSenix). */
@@ -95,8 +97,24 @@ async function viaExtension(url: string, headers: Record<string, string> | undef
   }
 }
 
+async function viaRelay(url: string, headers: Record<string, string> | undefined, patient: boolean): Promise<string | null> {
+  try {
+    const forwarded: Record<string, string> = { Accept: 'application/json, text/plain, */*' };
+    if (headers?.Authorization) forwarded.Authorization = headers.Authorization;
+    if (headers?.authorization) forwarded.Authorization = headers.authorization;
+    const response = await fetch(relayUrl('/api/lyrics', { url }), {
+      headers: forwarded,
+      signal: AbortSignal.timeout(patient ? EXTENSION_TIMEOUT_MS : DIRECT_TIMEOUT_MS),
+      referrerPolicy: 'no-referrer',
+    });
+    return response.ok ? await response.text() : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function lyricsGet(url: string, { route = 'direct', headers, patient }: GetOptions = {}): Promise<string | null> {
-  if (route === 'extension') return viaExtension(url, headers);
+  if (route === 'extension') return (await viaExtension(url, headers)) ?? viaRelay(url, headers, patient ?? false);
   try {
     const response = await fetch(url, {
       headers: { Accept: 'application/json, text/plain, */*', ...headers },
@@ -105,8 +123,9 @@ export async function lyricsGet(url: string, { route = 'direct', headers, patien
     });
     return response.ok ? await response.text() : null;
   } catch (error) {
-    // A CORS refusal looks like a network error from here; the extension isn't bound by it.
-    if (error instanceof TypeError) return viaExtension(url, headers);
+    // A CORS refusal looks like a network error from here; the extension and
+    // then the relay aren't bound by it.
+    if (error instanceof TypeError) return (await viaExtension(url, headers)) ?? viaRelay(url, headers, patient ?? false);
     return null;
   }
 }

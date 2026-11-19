@@ -42,6 +42,17 @@
   --side-panel-width: 300px;
   --mobile-top-bar-height: 52px;
   --mini-player-height: 52px;
+  /* The phone's bottom chrome: the tab bar, and the mini player stacked on it. */
+  --mobile-tab-bar-height: 50px;
+  --mobile-mini-height: 54px;
+  /* What a page must clear at the bottom: the tab bar, the mini player when a
+   * track is loaded, and the home indicator's inset. */
+  --mobile-bottom-chrome: calc(
+    var(--mobile-tab-bar-height) + env(safe-area-inset-bottom) + 4px
+  );
+  --mobile-bottom-chrome-with-player: calc(
+    var(--mobile-bottom-chrome) + var(--mobile-mini-height) + 4px
+  );
 
   /* ---- Radii ------------------------------------------------------------- */
   --radius-artwork-small: 5px; /* 40px track rows, horizontal lockups */
@@ -248,6 +259,8 @@
   --button-pill-color: #000000;
   --button-pill-background-color: #ffffff;
   --genericJoeColor: color-mix(in srgb, #ffffff 10%, var(--page-tint));
+  /* Headings that don't name a colour inherit this, not the body's black. */
+  color: var(--systemPrimary);
 }
 
 [data-tint='light'] {

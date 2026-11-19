@@ -19,6 +19,8 @@
   },
   "include": [
     "vite.config.ts",
+    "vite.relay.ts",
+    "relay/**/*.mjs",
     "src/**/*.test.ts",
     "src/**/*.d.ts"
   ]
