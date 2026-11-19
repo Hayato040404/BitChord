@@ -15,9 +15,9 @@ services:
     region: singapore
     plan: free
     rootDir: web
-    # The relay only needs Node; installing is not required at runtime, but it
-    # also keeps pnpm/corepack available for diagnostics.
-    buildCommand: corepack enable && pnpm install --frozen-lockfile
+    # Node 22.18's bundled Corepack (0.36) downloads pnpm 12 but then looks for
+    # bin/pnpm.cjs, which pnpm 12 no longer ships. Install pnpm with npm instead.
+    buildCommand: npm install --global pnpm@12.11.2
     startCommand: node --experimental-strip-types relay/server.mjs --port $PORT
     healthCheckPath: /health
     envVars:
@@ -28,7 +28,7 @@ services:
     name: bitchord-web-hayato
     runtime: static
     rootDir: web
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:site
+    buildCommand: npm install --global pnpm@12.11.2 && pnpm install --frozen-lockfile && pnpm build:site
     staticPublishPath: app/dist
     # Client-side routes such as /home must return index.html on refresh.
     routes:

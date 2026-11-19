@@ -77,8 +77,8 @@ creates both halves:
 
 | Service | Type | Root | Build | Publish / start |
 |---|---|---|---|---|
-| `bitchord-relay-hayato` | Node web service | `web` | `corepack enable && pnpm install --frozen-lockfile` | `node --experimental-strip-types relay/server.mjs --port $PORT` |
-| `bitchord-web-hayato` | static site | `web` | `corepack enable && pnpm install --frozen-lockfile && pnpm build:site` | `app/dist` |
+| `bitchord-relay-hayato` | Node web service | `web` | `npm install --global pnpm@12.11.2` | `node --experimental-strip-types relay/server.mjs --port $PORT` |
+| `bitchord-web-hayato` | static site | `web` | `npm install --global pnpm@12.11.2 && pnpm install --frozen-lockfile && pnpm build:site` | `app/dist` |
 
 The static site's `VITE_RELAY_BASE_URL` is taken from the relay's
 `RENDER_EXTERNAL_URL`, and the relay listens on Render's `$PORT`. The static
