@@ -1,29 +1,13 @@
 # Render Blueprint for the BitChord web player.
 #
-# It creates two services from this repository:
-#   * a Node web service for /api/yt, /api/media and /api/lyrics
-#   * a static site for the Vite app, built with the relay's URL
+# It creates the static app only. The relay is deliberately NOT hosted on
+# Render: YouTube blocks Render's shared datacenter egress (HTTP 403 "Sorry..."
+# from InnerTube). Run web/relay/server.mjs on a Raspberry Pi or VPS and expose
+# it through Cloudflare Tunnel instead, then set VITE_RELAY_BASE_URL below to
+# that HTTPS URL.
 #
 # In the Render dashboard: New -> Blueprint -> connect this repository -> Apply.
-# The service names must be unique; rename them here if Render says they are
-# taken. The static site's VITE_RELAY_BASE_URL is filled from the relay's
-# RENDER_EXTERNAL_URL, so no manual URL copying is needed.
 services:
-  - type: web
-    name: bitchord-relay-hayato
-    runtime: node
-    region: singapore
-    plan: free
-    rootDir: web
-    # Node 22.18's bundled Corepack (0.36) downloads pnpm 12 but then looks for
-    # bin/pnpm.cjs, which pnpm 12 no longer ships. Install pnpm with npm instead.
-    buildCommand: npm install --global pnpm@12.11.2
-    startCommand: node --experimental-strip-types relay/server.mjs --port $PORT
-    healthCheckPath: /health
-    envVars:
-      - key: NODE_VERSION
-        value: 22.18.0
-
   - type: web
     name: bitchord-web-hayato
     runtime: static
@@ -38,11 +22,11 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 22.18.0
+      # Set this in the Render dashboard to the Cloudflare Tunnel URL, e.g.
+      # https://relay.example.com (no trailing slash). Vite bakes it in at
+      # build time, so changing it requires a redeploy.
       - key: VITE_RELAY_BASE_URL
-        fromService:
-          type: web
-          name: bitchord-relay-hayato
-          envVarKey: RENDER_EXTERNAL_URL
+        sync: false
       # Listen Together needs a real party WebSocket server. This placeholder
       # only satisfies the production build; replace it if you run one.
       - key: VITE_PARTY_SERVER_URL

@@ -110,7 +110,7 @@ The relay needs no configuration: `functions/api/[[path]].ts` is picked up from 
 
 `build:site` packages the extension first, so each deploy publishes the zips and `downloads/extension.json` with the version from `web/extension/package.json`. The Extension page polls that file and offers the update when it's newer than the installed one. Bump that version to make an update show.
 
-**Render** is wired up in the root [`render.yaml`](../render.yaml): a free/paid Node web service for the relay and a static site for the app. In Render, choose **New → Blueprint** and connect the repository; the static site's `VITE_RELAY_BASE_URL` is filled from the relay automatically. See [`docs/deploy.md`](docs/deploy.md#render).
+**Render** is wired up in the root [`render.yaml`](../render.yaml) for the static app. The relay is not hosted on Render because YouTube blocks its shared datacenter egress; run `relay/server.mjs` on a Raspberry Pi and expose it with Cloudflare Tunnel, then set the static site's `VITE_RELAY_BASE_URL` to that HTTPS URL. In Render, choose **New → Blueprint** and connect the repository. See [`docs/deploy.md`](docs/deploy.md#render).
 
 **GitHub Pages** works for the site itself, but Pages can't run the relay, so it must be hosted elsewhere and named in `VITE_RELAY_BASE_URL`; `.github/workflows/pages.yml` builds and publishes it when run manually. **Self-hosting** (a LAN box, a VPS) is one command: `pnpm --filter @bitchord/app dev` or `preview --host` serves the site and the relay together. Both are written up in [`docs/deploy.md`](docs/deploy.md).
 

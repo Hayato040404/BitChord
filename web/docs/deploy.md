@@ -10,7 +10,7 @@ work on a phone too.
 | Host | The site | The relay | One command? |
 |---|---|---|---|
 | Cloudflare Pages | `functions/api/[[path]].ts` | same deployment, same origin | yes |
-| Render | static site + Node web service (`render.yaml`) | the Node service, separate origin | yes |
+| Render + Raspberry Pi | static site (`render.yaml`) | `relay/server.mjs` on the Pi, through Cloudflare Tunnel | no |
 | Your own machine, other devices on the LAN | `pnpm dev` / `pnpm preview` | the same server | yes |
 | GitHub Pages | `app/dist` as static files | **must be elsewhere** (Pages can't run code) | no |
 | Any static host / VPS / NAS | the files | `node web/relay/server.mjs` | no |
@@ -72,41 +72,209 @@ ngrok http 5173
 
 ## Render
 
-The repository includes a [`render.yaml`](../../render.yaml) Blueprint that
-creates both halves:
+[`render.yaml`](../../render.yaml) creates the **static app only**. The relay is
+deliberately not hosted on Render: YouTube blocks Render's shared datacenter
+egress with `403 Sorry...`, so a Render relay cannot play music reliably. Run
+the relay on a Raspberry Pi (or VPS) and expose it through Cloudflare Tunnel.
 
-| Service | Type | Root | Build | Publish / start |
+| Service | Type | Root | Build | Publish |
 |---|---|---|---|---|
-| `bitchord-relay-hayato` | Node web service | `web` | `npm install --global pnpm@12.11.2` | `node --experimental-strip-types relay/server.mjs --port $PORT` |
 | `bitchord-web-hayato` | static site | `web` | `npm install --global pnpm@12.11.2 && pnpm install --frozen-lockfile && pnpm build:site` | `app/dist` |
 
-The static site's `VITE_RELAY_BASE_URL` is taken from the relay's
-`RENDER_EXTERNAL_URL`, and the relay listens on Render's `$PORT`. The static
-site has an SPA rewrite so `/home` and other client-side routes survive a
-refresh.
+The static site has an SPA rewrite so `/home` and other client-side routes
+survive a refresh. `VITE_RELAY_BASE_URL` is marked `sync: false` in the
+Blueprint: set it to the tunnel URL in the Render dashboard.
 
 1. Push this repository to GitHub.
 2. In Render: **New → Blueprint**, connect the repository, and click **Apply**.
-3. If Render reports that a service name is taken, change both the service name
-   and the `fromService.name` reference in `render.yaml` to a unique name.
-4. Open the static site's `onrender.com` URL.
-5. Optional: replace the `VITE_PARTY_SERVER_URL` placeholder if you run the
-   Listen Together WebSocket server, then redeploy the static site.
+3. Open the `bitchord-web-hayato` service → **Environment**, set
+   `VITE_RELAY_BASE_URL` to the HTTPS tunnel URL from below (no trailing
+   slash), and save.
+4. Click **Manual Deploy → Deploy latest commit**. Vite bakes the relay URL in
+   at build time, so an environment change alone does not update the site.
+5. Open the static site's `onrender.com` URL.
+6. Optional: replace `VITE_PARTY_SERVER_URL` if you run the Listen Together
+   WebSocket server, then redeploy.
 
-Render's free **web service** spins down after inactivity; the first request
-after a nap can take tens of seconds, which is poor for a music player. Use the
-Starter plan for the relay if it matters. Static sites do not spin down.
+If you previously created the Render relay service, it is safe to suspend or
+delete it **after** the static site points at the tunnel. It is not used.
 
-Render sends outbound traffic through shared regional IP ranges. The relay's
-`/api/yt` and `/api/media` calls normally leave from the same running instance,
-but Render does not promise a single egress IP. If YouTube starts answering 403
-for media after a restart, that is the IP binding described at the bottom of
-this page; reloading the track mints a fresh URL from the current egress. A
-dedicated outbound IP set (Pro workspace) is the fully stable option.
+## Raspberry Pi + Cloudflare Tunnel
 
-If you prefer the dashboard over the Blueprint, create the two services
-manually with the table above, add `NODE_VERSION=22.18.0` to both, and set
-`VITE_RELAY_BASE_URL` on the static site to the relay's public URL.
+This is the recommended relay setup: the Pi fetches YouTube and lyric hosts
+from a residential IP, while Cloudflare only forwards inbound HTTPS. No router
+port-forwarding is needed, and the Pi can stay behind NAT.
+
+### 1. Prepare the Pi
+
+Use a 64-bit Raspberry Pi OS (Pi 4 or 5 recommended), wired Ethernet if
+possible, and Node 22.18 or newer.
+
+```bash
+sudo apt update
+sudo apt install -y curl git
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+node --version
+```
+
+Clone the repository:
+
+```bash
+git clone https://github.com/Hayato040404/BitChord.git
+cd BitChord
+```
+
+The relay has no npm dependencies, so no `pnpm install` is needed just to run
+it.
+
+### 2. Run the relay
+
+```bash
+node --experimental-strip-types web/relay/server.mjs --port 8787 --host 127.0.0.1
+```
+
+From another terminal on the Pi:
+
+```bash
+curl http://127.0.0.1:8787/health
+# ok
+```
+
+Leave the relay bound to `127.0.0.1`: Cloudflare Tunnel reaches it locally, and
+the port does not need to be exposed to the LAN or the internet.
+
+Install it as a service so it survives reboots:
+
+```bash
+sudo tee /etc/systemd/system/bitchord-relay.service >/dev/null <<'EOF'
+[Unit]
+Description=BitChord relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/BitChord
+ExecStart=/usr/bin/node --experimental-strip-types web/relay/server.mjs --port 8787 --host 127.0.0.1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now bitchord-relay
+sudo systemctl status bitchord-relay
+```
+
+Change `User=pi` and the two `/home/pi/...` paths if your Pi user is
+different. Check the Node path with `which node`; NodeSource installs it at
+`/usr/bin/node`.
+
+### 3. Install cloudflared
+
+Check the architecture first:
+
+```bash
+uname -m
+```
+
+For `aarch64` use the `arm64` package; for `armv7l` use `armhf`.
+
+```bash
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o cloudflared.deb
+sudo dpkg -i cloudflared.deb
+cloudflared --version
+```
+
+### 4. Get an HTTPS URL
+
+**Quick tunnel (test first, URL changes on restart):**
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8787
+```
+
+It prints a URL such as `https://random-words.trycloudflare.com`. Test it from
+another network:
+
+```bash
+curl https://random-words.trycloudflare.com/health
+```
+
+Set that URL as `VITE_RELAY_BASE_URL` in Render and redeploy. This is enough to
+verify that YouTube playback works from your home IP.
+
+**Stable tunnel (recommended for daily use):**
+
+A stable hostname needs a domain whose DNS is managed by Cloudflare. A cheap
+domain is enough; Cloudflare's DNS/proxy plan is free.
+
+1. Add the domain to Cloudflare and change its nameservers at the registrar.
+2. In Cloudflare **Zero Trust → Networks → Tunnels**, create a tunnel of type
+   **Cloudflared** and copy the token.
+3. On the Pi, install the connector with that token:
+
+   ```bash
+   sudo cloudflared service install <TOKEN>
+   sudo systemctl status cloudflared
+   ```
+
+4. In the tunnel's **Public Hostname** settings add:
+
+   ```text
+   Subdomain: relay
+   Domain:    example.com
+   Service:   http://127.0.0.1:8787
+   ```
+
+   Cloudflare creates the DNS record automatically.
+
+5. Do **not** put Cloudflare Access in front of this hostname; the BitChord app
+   is not a browser SSO client and would receive the Access login page instead
+   of relay responses.
+
+Use `https://relay.example.com` as `VITE_RELAY_BASE_URL`.
+
+### 5. Point Render at the tunnel and verify
+
+In Render's static service → **Environment**:
+
+```text
+VITE_RELAY_BASE_URL=https://relay.example.com
+```
+
+Save, then **Manual Deploy → Deploy latest commit**. Vite reads this variable at
+build time, so the redeploy is mandatory.
+
+Verify from outside the Pi:
+
+```bash
+curl https://relay.example.com/health
+```
+
+Then open the Render app, play a track, and open lyrics. The requests to
+`/api/yt`, `/api/media`, and `/api/lyrics` now go to the Pi, while the page
+itself stays on Render.
+
+### Troubleshooting
+
+- **502 from the tunnel:** the relay is not running, or the tunnel's service
+  URL/port is wrong. Check `systemctl status bitchord-relay` and
+  `curl 127.0.0.1:8787/health`.
+- **403 from YouTube:** the home IP is blocked (rare on residential
+  connections) or the request is not reaching the Pi. Check the relay log.
+- **CORS error in the browser:** `VITE_RELAY_BASE_URL` is wrong or the static
+  site was not rebuilt after changing it.
+- **Mixed-content error:** the tunnel URL must be `https://`.
+- **URL changed after reboot:** the quick tunnel is temporary; switch to a named
+  tunnel with your own hostname.
+- **Pi sleeps or loses power:** disable sleep, use Ethernet, and enable the
+  systemd services so relay and tunnel restart automatically.
+- **`cloudflared` can't connect:** check outbound HTTPS/DNS from the Pi; no
+  inbound port needs to be opened.
 
 ## GitHub Pages
 
