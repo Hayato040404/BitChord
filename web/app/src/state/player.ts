@@ -228,12 +228,23 @@ function unlockSilent(audio: HTMLAudioElement) {
   if (unlockedElements.has(audio) || unlockingElements.has(audio)) return;
   // Never replace a real track, or a preload that has already started.
   if (audio.src && !audio.src.startsWith('data:')) return;
+  const wasMuted = audio.muted;
+  const wasVolume = audio.volume;
   unlockingElements.add(audio);
-  audio.muted = true;
+  // Not muted: WebKit always allows muted autoplay, so a muted clip wouldn't
+  // count as the gesture this element needs. The clip is digital silence.
+  audio.muted = false;
+  audio.volume = 1;
   audio.src = SILENT_WAV;
   const settle = () => {
     unlockingElements.delete(audio);
-    audio.muted = false;
+    // Restore whatever the player's volume setting says; this element may
+    // already have been wired to the app's decks while the clip was playing.
+    if (decks) applyVolumes();
+    else {
+      audio.muted = wasMuted;
+      audio.volume = wasVolume;
+    }
     // The deck may already have been given a real track while this ran.
     if (audio.src.startsWith('data:')) {
       audio.pause();
@@ -811,7 +822,10 @@ async function startAt(at: number, { startSec = 0, auto = false, autoplay = true
   try {
     const all = await getDecks();
     const deck = all[active]!;
-    all[1 - active]!.engine.stop().catch(() => {});
+    const idle = all[1 - active]!;
+    // The idle deck may still be playing the silent clip that unlocks it
+    // inside this tap; clearing its source would cancel the unlock.
+    if (!idle.audio.src.startsWith('data:')) void idle.engine.stop().catch(() => {});
     deck.gain = 1;
     applyVolumes();
     const track = await deck.engine.load(entry.track.videoId, { startSec, autoplay });
