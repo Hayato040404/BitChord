@@ -147,6 +147,25 @@ let decks: Deck[] | null = null;
 let decksPromise: Promise<Deck[]> | null = null;
 let active = 0;
 
+/**
+ * The next track, loaded on the idle deck while the current one plays.
+ *
+ * Loading a track is what can't happen while a phone is in the background:
+ * iOS suspends the media element's network activity (and may refuse a new
+ * `play()`), so changing `src` at the end left the queue stopped until the
+ * app came back. The next track is therefore fetched ahead of time, while
+ * the page is still visible; at the end the player only switches decks and
+ * calls `play()` on an element that already has its audio.
+ */
+let preloaded: { deck: Deck; track: LoadedTrack; entryId: string } | null = null;
+let preloading = false;
+/** Invalidates an in-flight preload after a seek, a manual move, or a settings change. */
+let preloadToken = 0;
+/** A track whose preload failed; don't ask for it again on every timeupdate. */
+let preloadFailedFor: string | null = null;
+/** A next track loaded but its play() was refused while hidden; retry when visible. */
+let backgroundPlayPending = false;
+
 /** The audio element in front, if playback has started at least once. */
 export function getAudio(): HTMLAudioElement | null {
   return decks?.[active]?.audio ?? null;
@@ -193,18 +212,58 @@ export function getMixBeat(): { phase: number | null } | null {
   return graph?.dj.mixBeat() ?? null;
 }
 
+/**
+ * WebKit allows autoplay per media element: an element needs its first
+ * `play()` inside a tap, and a later `play()` (from the track's end, in the
+ * background) is refused if it never had one. Both decks therefore have to
+ * be unlocked up front; the one in front is unlocked by its own track, and
+ * the idle one by a silent clip played while the first tap is still active.
+ */
+const unlockedElements = new WeakSet<HTMLAudioElement>();
+const unlockingElements = new WeakSet<HTMLAudioElement>();
+/** One silent 16-bit sample at 44.1 kHz, enough for WebKit to accept the play. */
+const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
+function unlockSilent(audio: HTMLAudioElement) {
+  if (unlockedElements.has(audio) || unlockingElements.has(audio)) return;
+  // Never replace a real track, or a preload that has already started.
+  if (audio.src && !audio.src.startsWith('data:')) return;
+  unlockingElements.add(audio);
+  audio.muted = true;
+  audio.src = SILENT_WAV;
+  const settle = () => {
+    unlockingElements.delete(audio);
+    audio.muted = false;
+    // The deck may already have been given a real track while this ran.
+    if (audio.src.startsWith('data:')) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+  };
+  void audio.play().then(() => {
+    unlockedElements.add(audio);
+    settle();
+  }, settle);
+}
+
+function unlockIdleElement() {
+  const idle = decks?.[1 - active];
+  if (idle) unlockSilent(idle.audio);
+}
+
+document.addEventListener('pointerup', unlockIdleElement, true);
+document.addEventListener('keydown', unlockIdleElement, true);
+
 function getDecks(): Promise<Deck[]> {
   decksPromise ??= (async () => {
     // Shaka, YouTube.js and googlevideo are the heavy part of the app; they
     // load on the first play, not with the page (prompt §3).
     const backend = backendSnapshot();
-    const { YouTubeEngine } = await import('@/playback/youtube/engine');
-    // Without the extension, the portable engine streams progressive audio
-    // through the site's relay (playback/youtube/portableEngine.ts); Shaka
-    // and the WebPO machinery are only loaded for the extension's path.
-    const PortableEngine =
-      backend === 'extension' ? null : (await import('@/playback/youtube/portableEngine')).PortableEngine;
-    decks = [0, 1].map((n) => {
+    const portable = backend !== 'extension';
+    // The elements are made before the async imports: this runs synchronously
+    // inside the first tap, which is the only moment WebKit will unlock the
+    // deck that isn't playing yet (see unlockSilent).
+    const elements = [0, 1].map(() => {
       const audio = new Audio();
       audio.preload = 'auto';
       // Media from another origin is silent inside an AudioContext unless it
@@ -212,7 +271,16 @@ function getDecks(): Promise<Deck[]> {
       // normally our own origin; when it isn't (a static host with the relay
       // elsewhere) it needs CORS, and it serves it. The extension's path
       // needs it for googlevideo.
-      audio.crossOrigin = PortableEngine ? (relayIsCrossOrigin() ? 'anonymous' : null) : 'anonymous';
+      audio.crossOrigin = portable ? (relayIsCrossOrigin() ? 'anonymous' : null) : 'anonymous';
+      return audio;
+    });
+    unlockSilent(elements[1 - active]!);
+    const { YouTubeEngine } = await import('@/playback/youtube/engine');
+    // Without the extension, the portable engine streams progressive audio
+    // through the site's relay (playback/youtube/portableEngine.ts); Shaka
+    // and the WebPO machinery are only loaded for the extension's path.
+    const PortableEngine = portable ? (await import('@/playback/youtube/portableEngine')).PortableEngine : null;
+    decks = elements.map((audio, n) => {
       const engine: PlaybackEngine = PortableEngine ? new PortableEngine(audio) : new YouTubeEngine(audio);
       const deck: Deck = { engine, audio, gain: 1 };
       engine.onFatal = (videoId, message) => {
@@ -233,7 +301,19 @@ function getDecks(): Promise<Deck[]> {
     });
     applyVolumes();
     // For browser-driven tests: the elements aren't in the DOM.
-    if (import.meta.env.DEV) Object.defineProperty(window, '__bcAudio', { get: getAudio, configurable: true });
+    if (import.meta.env.DEV) {
+      Object.defineProperty(window, '__bcAudio', { get: getAudio, configurable: true });
+      Object.assign(window, {
+        __bcPreloaded: () => preloaded,
+        __bcDecks: () =>
+          decks?.map((d) => ({
+            src: d.audio.src.slice(0, 80),
+            paused: d.audio.paused,
+            muted: d.audio.muted,
+            unlocked: unlockedElements.has(d.audio),
+          })) ?? null,
+      });
+    }
     return decks;
   })();
   return decksPromise;
@@ -520,6 +600,7 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
   removeAt(at) {
     const { queue, index } = get();
     if (at === index || at < 0 || at >= queue.length) return;
+    dropPreload();
     set({ queue: queue.filter((_, i) => i !== at), index: at < index ? index - 1 : index });
     void refillAutoplay();
     intent();
@@ -528,6 +609,7 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
   move(from, to) {
     const { queue, index } = get();
     if (from <= index || to <= index || from >= queue.length || to >= queue.length || from === to) return;
+    dropPreload();
     const next = [...queue];
     const [entry] = next.splice(from, 1);
     next.splice(to, 0, entry!);
@@ -537,6 +619,7 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
 
   clearUpNext() {
     const { queue, index } = get();
+    dropPreload();
     const drop = new Set(upcomingUserQueueIndices(queue.map((e) => e.tier), index));
     set({ queue: queue.filter((_, i) => !drop.has(i)) });
     intent();
@@ -593,6 +676,7 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
 
   toggleShuffle() {
     const { queue, index, shuffle } = get();
+    dropPreload();
     const head = queue.slice(0, index + 1);
     const upcoming = queue.slice(index + 1);
     if (!shuffle) {
@@ -615,12 +699,14 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
 
   cycleRepeat() {
     const repeat: RepeatMode = { off: 'all', all: 'one', one: 'off' }[get().repeat] as RepeatMode;
+    dropPreload();
     set({ repeat });
     saveSettings(get());
     if (repeat === 'off') void refillAutoplay(true);
   },
 
   setAutoplay(autoplay) {
+    dropPreload();
     set({ autoplay });
     saveSettings(get());
     if (autoplay) void refillAutoplay(true);
@@ -644,12 +730,14 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
   },
 
   setCrossfade(crossfadeSec) {
+    dropPreload();
     set({ crossfadeSec, automix: false });
     saveSettings(get());
     syncAutomix();
   },
 
   setAutomix(automix) {
+    dropPreload();
     set({ automix, automixState: automix ? get().automixState : null });
     saveSettings(get());
     syncAutomix();
@@ -683,6 +771,8 @@ function positions(queue: readonly QueueEntry[]): Map<string, number> {
 
 function insertUser(tracks: Track[], source: QueueSource | null, isNext: boolean) {
   if (!tracks.length) return;
+  // The next track just changed; fetch the new one when this insertion settles.
+  dropPreload();
   const { queue, index } = usePlayer.getState();
   const entries = tracks.map((t) => asEntry(t, 'user', source));
   if (index < 0) {
@@ -701,6 +791,8 @@ async function startAt(at: number, { startSec = 0, auto = false, autoplay = true
   const state = usePlayer.getState();
   const entry = state.queue[at];
   if (!entry) return;
+  dropPreload();
+  preloadFailedFor = null;
   cancelCrossfade();
   const token = ++loadToken;
 
@@ -797,6 +889,142 @@ function afterTrackStarted() {
   }
   void refillAutoplay();
 }
+
+// ---- Keeping the next track ready for a background end ------------------------------
+
+/** Throws away the preload and stops whatever was being fetched for it. */
+function dropPreload() {
+  preloadToken++;
+  backgroundPlayPending = false;
+  const loaded = preloaded;
+  preloaded = null;
+  if (loaded) void loaded.deck.engine.stop().catch(() => {});
+}
+
+/**
+ * Fetches the queue's next track on the deck that isn't playing.
+ *
+ * Only the portable path needs this: the extension's engine already preloads
+ * through Shaka/crossfade, and loading a second Shaka stream would be waste.
+ * Crossfade and AutoMix own the idle deck, so they keep it.
+ */
+function preloadNext() {
+  if (decks === null || preloaded || preloading) return;
+  const { status, index, crossfadeSec, automix } = usePlayer.getState();
+  if (status !== 'playing' || index < 0 || crossfadeSec || automix || partyHooks?.inParty() || backendSnapshot() === 'extension') return;
+  const plan = planNext(true);
+  if (!plan || plan.kind !== 'index') return;
+  const entry = plan.queue[plan.index];
+  if (!entry || preloadFailedFor === entry.entryId) return;
+  const deck = decks[1 - active];
+  if (!deck || deck.audio === getAudio()) return;
+
+  const token = ++preloadToken;
+  const load = loadToken;
+  preloading = true;
+  trackLog.i('preloading the next track', entry.track.videoId);
+  deck.engine
+    .load(entry.track.videoId, { autoplay: false })
+    .then((track) => {
+      const currentPlan = planNext(true);
+      // A manual move, a failed load, or another track starting while this
+      // one was fetched makes this preload obsolete.
+      if (
+        token !== preloadToken ||
+        load !== loadToken ||
+        decks?.[1 - active] !== deck ||
+        preloaded !== null ||
+        currentPlan?.kind !== 'index' ||
+        currentPlan.queue[currentPlan.index]?.entryId !== entry.entryId
+      ) {
+        void deck.engine.stop().catch(() => {});
+        return;
+      }
+      deck.gain = 1;
+      applyVolumes();
+      preloaded = { deck, track, entryId: entry.entryId };
+      trackLog.i(`next track ready in the background (${track.format})`, entry.track.videoId);
+    })
+    .catch((error: unknown) => {
+      if (token !== preloadToken) return;
+      if (error instanceof Error && error.name === 'SupersededError') return;
+      preloadFailedFor = entry.entryId;
+      trackLog.w(`couldn't preload the next track: ${String(error)}`, entry.track.videoId);
+    })
+    .finally(() => {
+      preloading = false;
+    });
+}
+
+/**
+ * Switches to the preloaded track at a natural end. Returns false when the
+ * queue moved since the preload, in which case the ordinary advance runs.
+ */
+function playPreloaded(): boolean {
+  const ready = preloaded;
+  if (!ready || decks === null) return false;
+  const plan = planNext(true);
+  if (!plan || plan.kind !== 'index' || plan.queue[plan.index]?.entryId !== ready.entryId) {
+    dropPreload();
+    return false;
+  }
+  const entry = plan.queue[plan.index]!;
+  const from = decks[active]!;
+  const to = ready.deck;
+  if (to === from) {
+    dropPreload();
+    return false;
+  }
+
+  preloaded = null;
+  preloadFailedFor = null;
+  active = 1 - active;
+  from.gain = 1;
+  to.gain = 1;
+  applyVolumes();
+  usePlayer.setState((s) => ({ queue: plan.queue, index: plan.index, deck: s.deck + 1, status: 'playing' }));
+  applyTrack(ready.track, entry.track);
+  void to.audio
+    .play()
+    .then(() => {
+      backgroundPlayPending = false;
+    })
+    .catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === 'NotAllowedError') {
+        // iOS can refuse a play() that wasn't started by a tap. The track is
+        // already loaded, so coming back to the page is enough to resume it.
+        backgroundPlayPending = true;
+        usePlayer.setState({ status: 'buffering' });
+        trackLog.w('preloaded next track is waiting for the page to return (autoplay blocked)', entry.track.videoId);
+        return;
+      }
+      trackLog.w(`preloaded next track didn't start: ${String(error)}`, entry.track.videoId);
+    });
+  void from.engine.stop().catch(() => {});
+  afterTrackStarted();
+  intent();
+  return true;
+}
+
+/** Coming back from another app retries a next track iOS refused to start while hidden. */
+function resumeFromBackground() {
+  if (document.visibilityState !== 'visible') return;
+  const state = usePlayer.getState();
+  const audio = getAudio();
+  if (
+    audio?.paused &&
+    (backgroundPlayPending || state.status === 'playing' || state.status === 'loading' || state.status === 'buffering')
+  ) {
+    backgroundPlayPending = false;
+    void audio.play().catch((error: unknown) => {
+      trackLog.w(`resume after background was refused: ${String(error)}`);
+    });
+  }
+  preloadNext();
+}
+
+document.addEventListener('visibilitychange', resumeFromBackground);
+window.addEventListener('pageshow', resumeFromBackground);
 
 // ---- AutoPlay ---------------------------------------------------------------------
 
@@ -907,6 +1135,7 @@ const FADE_STEP_MS = 40;
 let fade: { token: number; frame: number; pending: boolean } | null = null;
 
 function cancelCrossfade() {
+  dropPreload();
   // AutoMix's blend or preloaded next track goes the same way as a fade: the deck in front plays on.
   if (graph && (graph.dj.mixing || mixLoaded)) {
     mixLoaded = null;
@@ -1029,7 +1258,11 @@ function bindElement(deck: Deck, n: number) {
     if (usePlayer.getState().status === 'error' && status !== 'playing') return;
     usePlayer.setState({ status });
   };
-  element.addEventListener('playing', () => set('playing'));
+  element.addEventListener('playing', () => {
+    unlockedElements.add(element);
+    set('playing');
+    if (inFront()) preloadNext();
+  });
   element.addEventListener('pause', () => {
     if (!element.ended) set('paused');
   });
@@ -1050,6 +1283,9 @@ function bindElement(deck: Deck, n: number) {
     if (fade?.pending) cancelCrossfade();
     // AutoMix's outgoing track ran out before the blend's midpoint (a stall): the incoming one is already playing.
     if (graph?.dj.forceHandoff()) return;
+    // The next track was loaded while this one played: switching decks is
+    // immediate, and works while the phone is in the background.
+    if (playPreloaded()) return;
     // The queue moving on by itself is the user's intent, as far as a party is concerned.
     void advance(true).then(intent);
   };
@@ -1075,6 +1311,7 @@ function bindElement(deck: Deck, n: number) {
     }
     maybeCrossfade();
     ensureAutoplay();
+    preloadNext();
   });
   for (const event of ['durationchange', 'ratechange', 'seeked'] as const) {
     element.addEventListener(event, () => {

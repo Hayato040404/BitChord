@@ -1,18 +1,19 @@
 // Registers <am-lyrics>.
 import '@uimaxbai/am-lyrics/am-lyrics.js';
-import { Check, ChevronDown, Loader2, Minus, Settings2 } from 'lucide-react';
+import { Check, ChevronDown, Loader2, Minus, PictureInPicture2, Settings2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useCanvas } from '@/data/spotify/canvas';
 import { getBridge } from '@/extension/bridge';
 import { Menu, MenuHeader, MenuItem, MenuSeparator } from '@/components/Menu';
 import { LyricClock } from '@/lyrics/clock';
 import { onUngrantedChange, ungrantedOrigins } from '@/lyrics/http';
-import type { SourceState } from '@/lyrics/repository';
+import type { LyricsResult, SourceState } from '@/lyrics/repository';
 import { enabledSources } from '@/lyrics/settings';
 import { sourceById, type LyricsSourceId } from '@/lyrics/sources';
 import { useLyrics, useLyricsUi } from '@/lyrics/useLyrics';
 import { getAudio, getPlayhead, usePlayer } from '@/state/player';
 import { LyricsSettings } from './LyricsSettings';
+import { canUseLyricsPip, startLyricsPip, type LyricsPipSession } from './lyricsPip';
 
 type AmLyricsElement = HTMLElement & {
   currentTime: number;
@@ -236,8 +237,61 @@ function useUngranted(): string[] {
 
 const NO_STATES: Partial<Record<LyricsSourceId, SourceState>> = {};
 
+/** The PiP toggle: the current lyrics in a floating window, for using another app while listening. */
+function PipButton({ result }: { result: LyricsResult | null }) {
+  const [supported] = useState(canUseLyricsPip);
+  const [active, setActive] = useState(false);
+  const latest = useRef(result);
+  latest.current = result;
+  const session = useRef<LyricsPipSession | null>(null);
+
+  useEffect(() => () => session.current?.close(), []);
+
+  if (!supported) return null;
+  const toggle = async () => {
+    if (session.current) {
+      session.current.close();
+      return;
+    }
+    const started = await startLyricsPip(
+      () => latest.current,
+      () => {
+        session.current = null;
+        setActive(false);
+      },
+    );
+    if (started) {
+      session.current = started;
+      setActive(true);
+    }
+  };
+
+  return (
+    <button
+      className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary disabled:opacity-35 aria-pressed:text-primary"
+      aria-label="Lyrics in Picture-in-Picture"
+      aria-pressed={active}
+      title="Lyrics in Picture-in-Picture"
+      disabled={!result}
+      onClick={() => void toggle()}
+    >
+      <PictureInPicture2 size={16} />
+    </button>
+  );
+}
+
 /** The provider picker: which provider these lyrics are from, and the others' answers for this track. */
-function ProviderPicker({ current, full }: { current: LyricsSourceId | null; full: boolean }) {
+function ProviderPicker({
+  current,
+  full,
+  mobile,
+  result,
+}: {
+  current: LyricsSourceId | null;
+  full: boolean;
+  mobile: boolean;
+  result: LyricsResult | null;
+}) {
   const videoId = usePlayer((s) => s.nowPlaying?.videoId ?? '');
   const states = useLyricsUi((s) => s.states[videoId]) ?? NO_STATES;
   const picked = useLyricsUi((s) => s.picked[videoId]);
@@ -251,7 +305,7 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
     // In full screen the picker sits quietly above the lines, shown on hover.
     <div
       className={
-        full
+        full && !mobile
           ? 'flex items-center justify-between pb-1 opacity-0 transition-opacity duration-200 group-hover/panel:opacity-100 focus-within:opacity-100'
           : 'flex items-center justify-between px-4 pt-4 pb-1'
       }
@@ -264,13 +318,16 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
         <span>{label}</span>
         <ChevronDown size={14} />
       </button>
-      <button
-        className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary"
-        aria-label="Lyric settings"
-        onClick={() => setSettings(true)}
-      >
-        <Settings2 size={16} />
-      </button>
+      <div className="flex items-center gap-1">
+        <PipButton result={result} />
+        <button
+          className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary"
+          aria-label="Lyric settings"
+          onClick={() => setSettings(true)}
+        >
+          <Settings2 size={16} />
+        </button>
+      </div>
       {anchor && (
         <Menu anchor={anchor} placement="below-end" onClose={close} label="Lyrics provider">
           <MenuItem checked={!picked} onSelect={() => (close(), pick(videoId, null))}>
@@ -370,7 +427,7 @@ const panel = 'group/panel relative isolate flex min-h-0 flex-1 flex-col overflo
 const fullSizes =
   '[--bitchord-lyric-size:26px] min-[980px]:[--bitchord-lyric-size:30px] min-[1320px]:[--bitchord-lyric-size:36px] min-[1680px]:[--bitchord-lyric-size:42px]';
 // The phone's lyrics sheet: Apple's size, which is between the desktop panel's and its full-screen column.
-const mobileSizes = '[--bitchord-lyric-size:24px]';
+const mobileSizes = '[--bitchord-lyric-size:26px]';
 
 /**
  * The lyrics, with their provider picker and empty states: the side panel
@@ -398,7 +455,7 @@ export function LyricsPanel({ variant = 'panel' }: { variant?: 'panel' | 'full' 
   return (
     <div className={full ? `${panel} ${fullSizes}` : mobile ? `${panel} ${mobileSizes}` : panel}>
       {canvas && variant === 'panel' && <CanvasBackdrop url={canvas} />}
-      <ProviderPicker current={result?.source ?? null} full={full || mobile} />
+      <ProviderPicker current={result?.source ?? null} full={full} mobile={mobile} result={result ?? null} />
       {/* Only worth raising when nothing was found: then the hosts behind the extension might have it. */}
       {ungranted.length > 0 && !result && !lyrics.isFetching && <PermissionNotice origins={ungranted} />}
       {!hasTrack ? (
