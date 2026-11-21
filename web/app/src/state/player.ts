@@ -932,6 +932,11 @@ function preloadNext() {
   if (!entry || preloadFailedFor === entry.entryId) return;
   const deck = decks[1 - active];
   if (!deck || deck.audio === getAudio()) return;
+  // The idle deck may still be playing the silent clip that unlocks it for
+  // the first background handoff. Loading over that clip would abort the
+  // play() the gesture granted, and the next automatic start would be
+  // refused. timeupdate retries as soon as the unlock settles.
+  if (unlockingElements.has(deck.audio)) return;
 
   const token = ++preloadToken;
   const load = loadToken;
@@ -951,7 +956,10 @@ function preloadNext() {
         currentPlan?.kind !== 'index' ||
         currentPlan.queue[currentPlan.index]?.entryId !== entry.entryId
       ) {
-        void deck.engine.stop().catch(() => {});
+        // Only clean up a deck that is still idle. A crossfade or AutoMix
+        // may have taken the deck over and made it the one in front while
+        // this load was finishing; stopping it then would cut the track off.
+        if (decks?.[1 - active] === deck) void deck.engine.stop().catch(() => {});
         return;
       }
       deck.gain = 1;
@@ -1013,6 +1021,10 @@ function playPreloaded(): boolean {
         return;
       }
       trackLog.w(`preloaded next track didn't start: ${String(error)}`, entry.track.videoId);
+      // The deck is loaded and ready, but silent. Don't leave the UI claiming
+      // it is playing; a later `playing` event will clear this if the element
+      // recovers on its own.
+      usePlayer.setState({ status: 'error', error: 'The next track could not start.' });
     });
   void from.engine.stop().catch(() => {});
   afterTrackStarted();
@@ -1149,7 +1161,10 @@ const FADE_STEP_MS = 40;
 let fade: { token: number; frame: number; pending: boolean } | null = null;
 
 function cancelCrossfade() {
-  dropPreload();
+  // A fade or AutoMix owns the idle deck, so its preload has to go with it.
+  // A seek or a pause does not: the next track is still next, and keeping it
+  // loaded avoids a fresh fetch at the end of a background track.
+  if (fade || (graph && (graph.dj.mixing || mixLoaded))) dropPreload();
   // AutoMix's blend or preloaded next track goes the same way as a fade: the deck in front plays on.
   if (graph && (graph.dj.mixing || mixLoaded)) {
     mixLoaded = null;
@@ -1246,6 +1261,11 @@ function applyTrack(track: LoadedTrack, from?: Track) {
   };
   usePlayer.setState({ nowPlaying, error: null });
   updateMediaSession(nowPlaying);
+  // The preloaded deck reported its duration while it was still behind the
+  // old track, so its durationchange listener ignored it. Refresh the lock
+  // screen now that the deck is in front; otherwise it shows the old track's
+  // position until the listener seeks.
+  updatePositionState();
   followVideo();
 }
 
@@ -1431,6 +1451,9 @@ export const partyPlayer = {
   setUpcoming(tracks: Track[], tiers: ('user' | 'autoplay')[]): void {
     const { queue, index } = usePlayer.getState();
     if (index < 0) return;
+    // The party just decided what comes next; a preload of the old next track
+    // would leave this device without a ready track at the end.
+    dropPreload();
     usePlayer.setState({ queue: [...queue.slice(0, index + 1), ...tracks.map((t, i) => asEntry(t, tiers[i] ?? 'user', PARTY_SOURCE))] });
   },
 };

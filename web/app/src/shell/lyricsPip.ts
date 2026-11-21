@@ -76,6 +76,15 @@ export function canUseLyricsPip(): boolean {
 }
 
 /**
+ * Whether to offer the PiP control. Home Screen apps can't enter PiP, but
+ * they still get the button: tapping it explains how to open the same page
+ * in Safari, which is more useful than hiding the feature without a word.
+ */
+export function canOfferLyricsPip(): boolean {
+  return pipSupport() !== null || isIosStandalone();
+}
+
+/**
  * Why PiP won't start here, when it is known before the attempt. iPhone Home
  * Screen apps are WebKit but don't get the presentation-mode API at all, and
  * no page can work around that.
@@ -187,7 +196,7 @@ export async function startLyricsPip(
     } else {
       pollWebkitPip(video, tick, () => {
         finish('Picture-in-Picture did not start. Open BitChord in Safari and try again.');
-      });
+      }, () => ended);
     }
 
     return {
@@ -254,14 +263,21 @@ async function enterStandard(video: PipVideo): Promise<void> {
   await video.requestPictureInPicture();
 }
 
-function pollWebkitPip(video: PipVideo, draw: () => void, fail: () => void): void {
+function pollWebkitPip(video: PipVideo, draw: () => void, fail: () => void, stopped: () => boolean): void {
   let attempt = 0;
+  let requested = false;
   const tryEnter = () => {
+    // The user may close the session while Safari is still deciding whether
+    // it can enter PiP; never open a window after that.
+    if (stopped()) return;
+    // Safari changes this asynchronously after setPresentationMode(), so keep
+    // polling: returning as soon as the call is made would report a PiP
+    // window that never opened.
     if (video.webkitPresentationMode === 'picture-in-picture') return;
     try {
-      if (video.webkitSupportsPresentationMode?.('picture-in-picture')) {
+      if (!requested && video.webkitSupportsPresentationMode?.('picture-in-picture')) {
         video.webkitSetPresentationMode?.('picture-in-picture');
-        return;
+        requested = true;
       }
     } catch {
       // Support is only advertised once a frame has played; keep trying.

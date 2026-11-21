@@ -13,7 +13,7 @@ import { sourceById, type LyricsSourceId } from '@/lyrics/sources';
 import { useLyrics, useLyricsUi } from '@/lyrics/useLyrics';
 import { getAudio, getPlayhead, usePlayer } from '@/state/player';
 import { LyricsSettings } from './LyricsSettings';
-import { canUseLyricsPip, lyricsPipIssue, startLyricsPip, type LyricsPipSession } from './lyricsPip';
+import { canOfferLyricsPip, lyricsPipIssue, startLyricsPip, type LyricsPipSession } from './lyricsPip';
 
 type AmLyricsElement = HTMLElement & {
   currentTime: number;
@@ -239,7 +239,7 @@ const NO_STATES: Partial<Record<LyricsSourceId, SourceState>> = {};
 
 /** The PiP toggle: the current lyrics in a floating window, for using another app while listening. */
 function PipButton({ result }: { result: LyricsResult | null }) {
-  const [supported] = useState(canUseLyricsPip);
+  const [offered] = useState(canOfferLyricsPip);
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -247,22 +247,25 @@ function PipButton({ result }: { result: LyricsResult | null }) {
   latest.current = result;
   const session = useRef<LyricsPipSession | null>(null);
   const noteTimer = useRef(0);
+  const mounted = useRef(true);
 
   const showNote = useCallback((message: string) => {
+    if (!mounted.current) return;
     setNote(message);
     window.clearTimeout(noteTimer.current);
     noteTimer.current = window.setTimeout(() => setNote(null), 7000);
   }, []);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       window.clearTimeout(noteTimer.current);
       session.current?.close();
-    },
-    [],
-  );
+    };
+  }, []);
 
-  if (!supported) return null;
+  if (!offered) return null;
   const toggle = async () => {
     if (session.current) {
       session.current.close();
@@ -274,19 +277,28 @@ function PipButton({ result }: { result: LyricsResult | null }) {
       return;
     }
     setStarting(true);
+    // startLyricsPip can report a failure before it returns; keep that exact
+    // reason instead of replacing it with the generic one below.
+    let failure: string | null = null;
     const started = await startLyricsPip(
       () => latest.current,
       (reason) => {
+        failure = reason ?? null;
+        if (!mounted.current) return;
         session.current = null;
         setActive(false);
         if (reason) showNote(reason);
       },
     );
+    if (!mounted.current) {
+      started?.close();
+      return;
+    }
     setStarting(false);
     if (started) {
       session.current = started;
       setActive(true);
-    } else if (!note) {
+    } else if (!failure) {
       showNote('Could not open Picture-in-Picture. Try Safari.');
     }
   };
