@@ -37,6 +37,16 @@ const CANVAS_HEIGHT = 1280;
 const PAD = 56;
 const ART_SIZE = 112;
 const BAR_Y = CANVAS_HEIGHT - 76;
+/** The lyric column: from below the header to just above the progress bar. */
+const LYRICS_TOP = 242;
+const LYRICS_BOTTOM = CANVAS_HEIGHT - 150;
+const ACTIVE_SIZE = 42;
+const OTHER_SIZE = 26;
+const ACTIVE_LINE_HEIGHT = 54;
+const OTHER_LINE_HEIGHT = 35;
+const ACTIVE_GAP = 20;
+const OTHER_GAP = 6;
+const MAX_ROWS = 24;
 
 const isIos = (): boolean =>
   /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -409,13 +419,13 @@ function drawLyrics(ctx: CanvasRenderingContext2D, result: LyricsResult | null):
   ctx.fillRect(0, 0, w, h);
 
   drawHeader(ctx, now, result, w);
-  drawLines(ctx, result, head?.sec ?? 0, w, h);
+  drawLines(ctx, result, head?.sec ?? 0, w);
 
-  const bottomFade = ctx.createLinearGradient(0, h - 250, 0, h - 130);
+  const bottomFade = ctx.createLinearGradient(0, LYRICS_BOTTOM - 24, 0, LYRICS_BOTTOM + 42);
   bottomFade.addColorStop(0, 'rgba(5,5,8,0)');
-  bottomFade.addColorStop(1, 'rgba(5,5,8,0.94)');
+  bottomFade.addColorStop(1, 'rgba(5,5,8,0.92)');
   ctx.fillStyle = bottomFade;
-  ctx.fillRect(0, h - 250, w, 120);
+  ctx.fillRect(0, LYRICS_BOTTOM - 24, w, 66);
 
   drawProgress(ctx, head?.sec ?? 0, w, h);
   ctx.restore();
@@ -482,49 +492,35 @@ function drawHeader(
   ctx.stroke();
 }
 
-function drawLines(ctx: CanvasRenderingContext2D, result: LyricsResult | null, sec: number, w: number, h: number): void {
+function drawLines(ctx: CanvasRenderingContext2D, result: LyricsResult | null, sec: number, w: number): void {
   const lines = result?.lines ?? [];
   const currentMs = sec * 1000;
-  const center = h * 0.55;
   ctx.textAlign = 'center';
 
   if (!lines.length) {
+    const center = (LYRICS_TOP + LYRICS_BOTTOM) / 2;
     ctx.fillStyle = 'rgba(255,255,255,0.68)';
     ctx.font = `500 26px ${FONT}`;
-    if (lines.length === 0 && result) ctx.fillText('No lyrics', w / 2, center);
-    else ctx.fillText('Loading lyrics…', w / 2, center);
+    ctx.fillText(result ? 'No lyrics' : 'Loading lyrics…', w / 2, center);
     return;
   }
 
   const active = activeLine(lines, currentMs);
-  const rows = visibleRows(lines, active).map((row) => {
-    const isActive = row.index === active;
-    const weight = isActive ? 700 : 500;
-    const size = isActive ? 42 : 26;
-    const lineHeight = isActive ? 54 : 35;
-    const timed = timedText(row.line);
-    const segments = wrapSegments(ctx, timed.text, w - PAD * 2, `${weight} ${size}px ${FONT}`, isActive ? 3 : 2);
-    return {
-      isActive,
-      size,
-      weight,
-      lineHeight,
-      timed,
-      segments,
-      height: segments.length * lineHeight,
-      gap: isActive ? 28 : 12,
-      opacity: isActive ? 1 : distanceOpacity(row.index - active),
-    };
-  });
-  const total = rows.reduce((sum, row) => sum + row.height + row.gap, 0);
-  let y = center - total / 2;
+  const rows = active >= 0 ? rowsAround(ctx, lines, active, w) : openingRows(ctx, lines, w);
+  if (!rows.length) return;
+  const height = blockHeight(rows);
+  let y = blockTop(rows, lines.length, height);
+
+  // The column is deliberately clipped: the lyric area owns the whole space
+  // between the header and the progress bar, with no dead band in the middle.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, LYRICS_TOP - 2, w, LYRICS_BOTTOM - LYRICS_TOP + 4);
+  ctx.clip();
 
   for (const row of rows) {
     const font = `${row.weight} ${row.size}px ${FONT}`;
     for (const segment of row.segments) {
-      const sung = row.isActive && row.timed.times.length
-        ? countSung(row.timed.times, segment.from, segment.to, currentMs)
-        : 0;
       drawSegment(
         ctx,
         segment,
@@ -533,24 +529,132 @@ function drawLines(ctx: CanvasRenderingContext2D, result: LyricsResult | null, s
         font,
         row.isActive
           ? row.timed.times.length
-            ? 'rgba(255,255,255,0.46)'
+            ? 'rgba(255,255,255,0.55)'
             : 'rgba(255,255,255,0.98)'
           : `rgba(255,255,255,${row.opacity})`,
-        'rgba(255,255,255,1)',
-        sung,
+        row.isActive ? row.timed : null,
+        currentMs,
         row.isActive,
       );
       y += row.lineHeight;
     }
     y += row.gap;
   }
+  ctx.restore();
+}
+
+interface RenderRow {
+  index: number;
+  isActive: boolean;
+  size: number;
+  weight: number;
+  lineHeight: number;
+  timed: TimedText;
+  segments: Segment[];
+  height: number;
+  gap: number;
+  opacity: number;
+}
+
+/**
+ * Fills the whole lyric column around the active line. Rows are added on both
+ * sides until the next one would reach the progress bar, so a PiP window is
+ * lyrics first rather than nine lines floating in empty space.
+ */
+function rowsAround(ctx: CanvasRenderingContext2D, lines: LyricLine[], active: number, w: number): RenderRow[] {
+  const span = LYRICS_BOTTOM - LYRICS_TOP;
+  const chosen = new Map<number, RenderRow>();
+  chosen.set(active, buildRow(ctx, lines, active, active, w));
+  let before = active - 1;
+  let after = active + 1;
+
+  while (chosen.size < MAX_ROWS) {
+    let progressed = false;
+    for (const side of ['after', 'before'] as const) {
+      const index = side === 'after' ? after : before;
+      if (index < 0 || index >= lines.length) continue;
+      const row = buildRow(ctx, lines, index, active, w);
+      const next = [...chosen.values(), row].sort((a, b) => a.index - b.index);
+      if (blockHeight(next) > span) continue;
+      chosen.set(index, row);
+      if (side === 'after') after++;
+      else before--;
+      progressed = true;
+    }
+    if (!progressed) break;
+  }
+
+  return [...chosen.values()].sort((a, b) => a.index - b.index);
+}
+
+/** Before the first timed line: fill from the top with the opening lyrics. */
+function openingRows(ctx: CanvasRenderingContext2D, lines: LyricLine[], w: number): RenderRow[] {
+  const span = LYRICS_BOTTOM - LYRICS_TOP;
+  const rows: RenderRow[] = [];
+  for (let index = 0; index < lines.length && rows.length < MAX_ROWS; index++) {
+    const row = buildRow(ctx, lines, index, -1, w);
+    if (blockHeight([...rows, row]) > span) break;
+    rows.push(row);
+  }
+  return rows;
+}
+
+function buildRow(
+  ctx: CanvasRenderingContext2D,
+  lines: LyricLine[],
+  index: number,
+  active: number,
+  w: number,
+): RenderRow {
+  const line = lines[index]!;
+  const isActive = index === active;
+  const size = isActive ? ACTIVE_SIZE : OTHER_SIZE;
+  const weight = isActive ? 700 : 500;
+  const lineHeight = isActive ? ACTIVE_LINE_HEIGHT : OTHER_LINE_HEIGHT;
+  const timed = timedText(line);
+  const segments = wrapSegments(ctx, timed.text, w - PAD * 2, `${weight} ${size}px ${FONT}`, 2);
+  return {
+    index,
+    isActive,
+    size,
+    weight,
+    lineHeight,
+    timed,
+    segments,
+    height: segments.length * lineHeight,
+    gap: isActive ? ACTIVE_GAP : OTHER_GAP,
+    opacity: isActive ? 1 : distanceOpacity(index - active),
+  };
+}
+
+function blockHeight(rows: RenderRow[]): number {
+  return rows.reduce((sum, row, index) => sum + row.height + (index < rows.length - 1 ? row.gap : 0), 0);
+}
+
+function blockTop(rows: RenderRow[], lineCount: number, height: number): number {
+  const first = rows[0]!.index;
+  const last = rows[rows.length - 1]!.index;
+  if (first === 0) return LYRICS_TOP;
+  if (last === lineCount - 1) return Math.max(LYRICS_TOP, LYRICS_BOTTOM - height);
+  return LYRICS_TOP + Math.max(0, (LYRICS_BOTTOM - LYRICS_TOP - height) / 2);
 }
 
 function distanceOpacity(distance: number): number {
-  const table = [0.7, 0.47, 0.29, 0.17, 0.1];
-  return table[Math.min(Math.max(Math.abs(distance) - 1, 0), table.length - 1)] ?? 0.1;
+  const table = [0.62, 0.44, 0.31, 0.22, 0.16, 0.12];
+  return table[Math.min(Math.max(Math.abs(distance) - 1, 0), table.length - 1)] ?? 0.12;
 }
 
+interface Wipe {
+  kind: 'none' | 'partial' | 'full';
+  /** Pixels from the segment's left edge. */
+  x: number;
+}
+
+/**
+ * A soft karaoke edge, like am-lyrics' interpolated highlight: the current
+ * character is filled by how far playback has moved through its word, and the
+ * edge itself is a short gradient rather than a hard character slice.
+ */
 function drawSegment(
   ctx: CanvasRenderingContext2D,
   segment: Segment,
@@ -558,8 +662,8 @@ function drawSegment(
   y: number,
   font: string,
   base: string,
-  sungColor: string,
-  sungChars: number,
+  timed: TimedText | null,
+  currentMs: number,
   glow: boolean,
 ): void {
   ctx.font = font;
@@ -575,11 +679,56 @@ function drawSegment(
   ctx.fillText(segment.text, x, y);
   ctx.restore();
 
-  if (sungChars <= 0) return;
-  const sung = segment.text.slice(0, sungChars);
-  if (!sung) return;
-  ctx.fillStyle = sungColor;
-  ctx.fillText(sung, x, y);
+  if (!timed?.times.length) return;
+  const wipe = wipeAt(ctx, segment, timed, currentMs);
+  if (wipe.kind === 'none') return;
+  if (wipe.kind === 'full') {
+    ctx.fillStyle = 'rgba(255,255,255,1)';
+    ctx.fillText(segment.text, x, y);
+    return;
+  }
+
+  const edge = x + wipe.x;
+  const soft = 22;
+  const gradient = ctx.createLinearGradient(edge - soft, 0, edge + soft, 0);
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(0.38, 'rgba(255,255,255,1)');
+  gradient.addColorStop(0.72, 'rgba(255,255,255,0.55)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gradient;
+  ctx.fillText(segment.text, x, y);
+}
+
+function wipeAt(
+  ctx: CanvasRenderingContext2D,
+  segment: Segment,
+  timed: TimedText,
+  currentMs: number,
+): Wipe {
+  const from = segment.from;
+  const to = Math.min(segment.to, segment.from + segment.text.length, timed.times.length);
+  if (from >= to) return { kind: 'none', x: 0 };
+
+  const first = timed.times[from];
+  if (first === undefined || currentMs <= first) return { kind: 'none', x: 0 };
+  const lastEnd = timed.ends[to - 1];
+  if (lastEnd === undefined || currentMs >= lastEnd) return { kind: 'full', x: 0 };
+
+  for (let i = from; i < to; i++) {
+    const start = timed.times[i];
+    const end = timed.ends[i];
+    if (start === undefined || end === undefined) break;
+    const offset = i - from;
+    const before = ctx.measureText(segment.text.slice(0, offset)).width;
+    if (currentMs >= end) continue;
+    if (currentMs >= start) {
+      const progress = end > start ? Math.min(1, Math.max(0, (currentMs - start) / (end - start))) : 1;
+      const width = ctx.measureText(segment.text.slice(offset, offset + 1)).width;
+      return { kind: 'partial', x: before + width * progress };
+    }
+    return { kind: 'partial', x: before };
+  }
+  return { kind: 'full', x: 0 };
 }
 
 function drawProgress(ctx: CanvasRenderingContext2D, sec: number, w: number, h: number): void {
@@ -616,6 +765,7 @@ function drawProgress(ctx: CanvasRenderingContext2D, sec: number, w: number, h: 
 interface TimedText {
   text: string;
   times: number[];
+  ends: number[];
 }
 
 interface Segment {
@@ -633,35 +783,29 @@ function activeLine(lines: LyricLine[], timeMs: number): number {
   return active;
 }
 
-function visibleRows(lines: LyricLine[], active: number): { index: number; line: LyricLine }[] {
-  if (!lines.length) return [];
-  const start = Math.max(0, active - 4);
-  const end = Math.min(lines.length, Math.max(active + 5, start + 9));
-  const rows: { index: number; line: LyricLine }[] = [];
-  for (let i = start; i < end; i++) rows.push({ index: i, line: lines[i]! });
-  return rows;
-}
-
-/** The line's text and, where the provider timed words, each character's start. */
+/** The line's text and, where the provider timed words, each character's interval. */
 function timedText(line: LyricLine): TimedText {
   const words = line.words;
-  if (!words.length) return { text: line.text || '♪', times: [] };
+  if (!words.length) return { text: line.text || '♪', times: [], ends: [] };
   let text = '';
   const times: number[] = [];
+  const ends: number[] = [];
   for (let w = 0; w < words.length; w++) {
     const word = words[w]!;
     if (w > 0 && needsSpace(words[w - 1]!, word)) {
       text += ' ';
       times.push(word.startMs);
+      ends.push(word.startMs);
     }
     const chars = [...word.text];
     const span = Math.max(1, word.endMs - word.startMs);
     for (let c = 0; c < chars.length; c++) {
       text += chars[c]!;
       times.push(word.startMs + (span * c) / chars.length);
+      ends.push(word.startMs + (span * (c + 1)) / chars.length);
     }
   }
-  return { text: text || line.text || '♪', times };
+  return { text: text || line.text || '♪', times, ends };
 }
 
 /**
@@ -705,16 +849,6 @@ function wrapSegments(
     last.text = ellipsize(ctx, `${last.text}…`, maxWidth);
   }
   return out;
-}
-
-function countSung(times: number[], from: number, to: number, currentMs: number): number {
-  let count = 0;
-  for (let i = from; i < to; i++) {
-    const at = times[i];
-    if (at === undefined || at > currentMs + 30) break;
-    count++;
-  }
-  return count;
 }
 
 // ---- Small canvas helpers -------------------------------------------------------------
