@@ -13,7 +13,7 @@ import { sourceById, type LyricsSourceId } from '@/lyrics/sources';
 import { useLyrics, useLyricsUi } from '@/lyrics/useLyrics';
 import { getAudio, getPlayhead, usePlayer } from '@/state/player';
 import { LyricsSettings } from './LyricsSettings';
-import { canUseLyricsPip, startLyricsPip, type LyricsPipSession } from './lyricsPip';
+import { canUseLyricsPip, lyricsPipIssue, startLyricsPip, type LyricsPipSession } from './lyricsPip';
 
 type AmLyricsElement = HTMLElement & {
   currentTime: number;
@@ -241,11 +241,26 @@ const NO_STATES: Partial<Record<LyricsSourceId, SourceState>> = {};
 function PipButton({ result }: { result: LyricsResult | null }) {
   const [supported] = useState(canUseLyricsPip);
   const [active, setActive] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const latest = useRef(result);
   latest.current = result;
   const session = useRef<LyricsPipSession | null>(null);
+  const noteTimer = useRef(0);
 
-  useEffect(() => () => session.current?.close(), []);
+  const showNote = useCallback((message: string) => {
+    setNote(message);
+    window.clearTimeout(noteTimer.current);
+    noteTimer.current = window.setTimeout(() => setNote(null), 7000);
+  }, []);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(noteTimer.current);
+      session.current?.close();
+    },
+    [],
+  );
 
   if (!supported) return null;
   const toggle = async () => {
@@ -253,30 +268,51 @@ function PipButton({ result }: { result: LyricsResult | null }) {
       session.current.close();
       return;
     }
+    const issue = lyricsPipIssue();
+    if (issue) {
+      showNote(issue);
+      return;
+    }
+    setStarting(true);
     const started = await startLyricsPip(
       () => latest.current,
-      () => {
+      (reason) => {
         session.current = null;
         setActive(false);
+        if (reason) showNote(reason);
       },
     );
+    setStarting(false);
     if (started) {
       session.current = started;
       setActive(true);
+    } else if (!note) {
+      showNote('Could not open Picture-in-Picture. Try Safari.');
     }
   };
 
   return (
-    <button
-      className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary disabled:opacity-35 aria-pressed:text-primary"
-      aria-label="Lyrics in Picture-in-Picture"
-      aria-pressed={active}
-      title="Lyrics in Picture-in-Picture"
-      disabled={!result}
-      onClick={() => void toggle()}
-    >
-      <PictureInPicture2 size={16} />
-    </button>
+    <div className="relative">
+      <button
+        className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary disabled:opacity-35 aria-pressed:text-primary"
+        aria-label="Lyrics in Picture-in-Picture"
+        aria-pressed={active}
+        aria-busy={starting}
+        title="Lyrics in Picture-in-Picture"
+        disabled={!result || starting}
+        onClick={() => void toggle()}
+      >
+        {starting ? <Loader2 size={16} className="animate-spin" /> : <PictureInPicture2 size={16} />}
+      </button>
+      {note && (
+        <div
+          className="absolute top-full right-0 z-20 mt-2 w-64 rounded-[10px] bg-[rgb(38_38_42/0.97)] px-3 py-2 text-left type-callout text-secondary shadow-[0_12px_32px_rgb(0_0_0/0.45)] [backdrop-filter:blur(20px)]"
+          role="status"
+        >
+          {note}
+        </div>
+      )}
+    </div>
   );
 }
 
