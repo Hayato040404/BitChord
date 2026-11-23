@@ -316,6 +316,7 @@ function getDecks(): Promise<Deck[]> {
       Object.defineProperty(window, '__bcAudio', { get: getAudio, configurable: true });
       Object.assign(window, {
         __bcPreloaded: () => preloaded,
+        __bcDeckAudio: () => decks?.map((d) => d.audio) ?? null,
         __bcDecks: () =>
           decks?.map((d) => ({
             src: d.audio.src.slice(0, 80),
@@ -666,7 +667,15 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
       void startAt(index, { startSec: audio?.currentTime ?? 0 });
     } else if (audio.paused) {
       // In a party, a resume waits for the instant the server schedules for everyone.
-      if (!partyHooks?.shouldDeferPlay()) void audio.play().catch((e: unknown) => trackLog.w(`play() refused: ${String(e)}`));
+      if (!partyHooks?.shouldDeferPlay()) {
+        void audio
+          .play()
+          .then(() => {
+            syncMediaSessionState();
+            pauseIdleDecks();
+          })
+          .catch((e: unknown) => trackLog.w(`play() refused: ${String(e)}`));
+      }
     } else {
       cancelCrossfade();
       audio.pause();
@@ -832,6 +841,7 @@ async function startAt(at: number, { startSec = 0, auto = false, autoplay = true
     if (token !== loadToken) return;
     applyTrack(track, entry.track);
     if (!autoplay) usePlayer.setState({ status: 'paused' });
+    syncMediaSessionState();
     afterTrackStarted();
     syncAutomix();
   } catch (error) {
@@ -962,6 +972,9 @@ function preloadNext() {
         if (decks?.[1 - active] === deck) void deck.engine.stop().catch(() => {});
         return;
       }
+      // A preload is for later; if iOS started the element on its own while
+      // the page was hidden, silence it and keep it buffered for the handoff.
+      if (!deck.audio.paused) deck.audio.pause();
       deck.gain = 1;
       applyVolumes();
       preloaded = { deck, track, entryId: entry.entryId };
@@ -1006,12 +1019,23 @@ function playPreloaded(): boolean {
   applyVolumes();
   usePlayer.setState((s) => ({ queue: plan.queue, index: plan.index, deck: s.deck + 1, status: 'playing' }));
   applyTrack(ready.track, entry.track);
+  // Stop the old deck before starting the new one. On iOS the system tracks
+  // the most recently touched media element: pausing the old track *after*
+  // the new one starts can leave the Home Screen controls showing "paused"
+  // (or a stale position) while the new track is already sounding.
+  void from.engine.stop().catch(() => {});
   void to.audio
     .play()
     .then(() => {
       backgroundPlayPending = false;
+      // The new element's own `play` event can be missed on a background
+      // handoff. Make the OS's Now Playing state authoritative, and make
+      // sure the idle deck isn't still audible.
+      syncMediaSessionState();
+      pauseIdleDecks();
     })
     .catch((error: unknown) => {
+      syncMediaSessionState();
       if (error instanceof DOMException && error.name === 'NotAllowedError') {
         // iOS can refuse a play() that wasn't started by a tap. The track is
         // already loaded, so coming back to the page is enough to resume it.
@@ -1026,10 +1050,38 @@ function playPreloaded(): boolean {
       // recovers on its own.
       usePlayer.setState({ status: 'error', error: 'The next track could not start.' });
     });
-  void from.engine.stop().catch(() => {});
   afterTrackStarted();
   intent();
   return true;
+}
+
+/** Keeps the OS's Now Playing state in step with the deck in front. */
+function syncMediaSessionState() {
+  if (!('mediaSession' in navigator)) return;
+  const audio = getAudio();
+  // A loop mix keeps both elements paused while the Web Audio graph plays.
+  const sounding = graph?.dj.loopMixing || (audio !== null && !audio.paused);
+  navigator.mediaSession.playbackState = sounding ? 'playing' : 'paused';
+  updatePositionState();
+}
+
+/**
+ * iOS normally allows only one media element to sound at a time, but after a
+ * background handoff it can leave the old one running. Crossfade and AutoMix
+ * own both decks on purpose; everywhere else only the deck in front may play.
+ */
+function pauseIdleDecks() {
+  if (!decks || fade || holding || graph?.dj.mixing || graph?.dj.loopMixing) return;
+  for (let i = 0; i < decks.length; i++) {
+    if (i === active) continue;
+    const audio = decks[i]!.audio;
+    // The silent unlock clip is deliberately playing on the idle deck.
+    if (unlockingElements.has(audio)) continue;
+    if (!audio.paused && !audio.ended) {
+      trackLog.w('pausing an idle deck that was still sounding');
+      audio.pause();
+    }
+  }
 }
 
 /** Coming back from another app retries a next track iOS refused to start while hidden. */
@@ -1037,15 +1089,36 @@ function resumeFromBackground() {
   if (document.visibilityState !== 'visible') return;
   const state = usePlayer.getState();
   const audio = getAudio();
-  if (
-    audio?.paused &&
-    (backgroundPlayPending || state.status === 'playing' || state.status === 'loading' || state.status === 'buffering')
-  ) {
+  const wanted =
+    backgroundPlayPending || state.status === 'playing' || state.status === 'loading' || state.status === 'buffering';
+  // Don't call play() on an ended element: the platform restarts it at 0:00,
+  // while `ended` also moves the queue on. That is how a returning app ended
+  // up with the old track and the next one sounding together.
+  if (audio?.ended && wanted) {
     backgroundPlayPending = false;
-    void audio.play().catch((error: unknown) => {
-      trackLog.w(`resume after background was refused: ${String(error)}`);
-    });
+    if (!playPreloaded()) void advance(true).then(intent);
+    pauseIdleDecks();
+    preloadNext();
+    return;
   }
+  if (audio?.paused && wanted) {
+    backgroundPlayPending = false;
+    void audio
+      .play()
+      .then(() => {
+        syncMediaSessionState();
+        pauseIdleDecks();
+      })
+      .catch((error: unknown) => {
+        trackLog.w(`resume after background was refused: ${String(error)}`);
+      });
+  } else if (audio && !audio.paused) {
+    // The audio survived the background; only the system's Now Playing state
+    // is stale. Correct it instead of touching playback.
+    backgroundPlayPending = false;
+    syncMediaSessionState();
+  }
+  pauseIdleDecks();
   preloadNext();
 }
 
@@ -1295,7 +1368,11 @@ function bindElement(deck: Deck, n: number) {
   element.addEventListener('playing', () => {
     unlockedElements.add(element);
     set('playing');
-    if (inFront()) preloadNext();
+    if (inFront()) {
+      pauseIdleDecks();
+      syncMediaSessionState();
+      preloadNext();
+    }
   });
   element.addEventListener('pause', () => {
     if (!element.ended) set('paused');
@@ -1353,10 +1430,13 @@ function bindElement(deck: Deck, n: number) {
     });
   }
   element.addEventListener('play', () => {
-    if (inFront() && 'mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+    if (inFront()) syncMediaSessionState();
+    // iOS can start a media element by itself after a background transition.
+    // Only the deck in front may sound (crossfade and AutoMix opt out inside).
+    else pauseIdleDecks();
   });
   element.addEventListener('pause', () => {
-    if (inFront() && 'mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+    if (inFront()) syncMediaSessionState();
   });
 }
 
